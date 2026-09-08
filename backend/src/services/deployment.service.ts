@@ -365,11 +365,22 @@ export class DeploymentService {
     rawDeploymentId: unknown,
     onEvent?: DeploymentEventCallback,
   ): Promise<DeploymentRecord> {
-    const deployment = await this.#getOwnedDeployment(
+    const previousDeployment = await this.#getOwnedDeployment(
       userId,
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
-    return this.deployProjectForUser(userId, deployment.projectId, onEvent);
+    const newDeployment = await this.deployProject(
+      previousDeployment.projectId,
+      onEvent,
+    );
+
+    await this.#stopPreviousRunningDeployments(
+      previousDeployment.projectId,
+      newDeployment.id,
+      onEvent,
+    );
+
+    return newDeployment;
   }
 
   public async getDeploymentLogs(
@@ -620,6 +631,59 @@ export class DeploymentService {
       createdAt: deployment.createdAt,
       updatedAt: deployment.updatedAt,
     };
+  }
+
+  async #stopPreviousRunningDeployments(
+    projectId: string,
+    activeDeploymentId: string,
+    onEvent: DeploymentEventCallback | undefined,
+  ): Promise<void> {
+    let deployments: DeploymentRecord[];
+
+    try {
+      deployments = await this.#database.deployment.findMany({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+      });
+    } catch {
+      throw new AppError(
+        500,
+        'New deployment is running but previous deployments could not be stopped',
+      );
+    }
+
+    const previousRunningDeployments = deployments.filter(
+      (deployment) =>
+        deployment.id !== activeDeploymentId &&
+        deployment.status === DeploymentStatus.RUNNING,
+    );
+
+    for (const deployment of previousRunningDeployments) {
+      if (deployment.containerId === null) {
+        throw new AppError(
+          500,
+          'New deployment is running but a previous deployment could not be stopped',
+        );
+      }
+
+      try {
+        await this.#containerService.stopContainer(deployment.containerId);
+        const stoppedDeployment = await this.#updateDeployment(deployment.id, {
+          status: DeploymentStatus.STOPPED,
+          finishedAt: this.#now(),
+        });
+        this.#emit(onEvent, {
+          type: 'status',
+          deploymentId: stoppedDeployment.id,
+          status: DeploymentStatus.STOPPED,
+        });
+      } catch {
+        throw new AppError(
+          500,
+          'New deployment is running but a previous deployment could not be stopped',
+        );
+      }
+    }
   }
 
   async #cleanupResources(

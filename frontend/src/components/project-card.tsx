@@ -1,37 +1,14 @@
-import type { Deployment, DeploymentStatus, Project } from "@/lib/api";
+import Link from "next/link";
+
+import type { Deployment, Project } from "@/lib/api";
+import {
+  DEPLOYMENT_STATUS_LABELS,
+  DEPLOYMENT_STATUS_STYLES,
+  formatDateTime,
+} from "@/lib/deployments";
 
 export type ProjectWithLatestDeployment = Project & {
   latestDeployment: Deployment | null;
-};
-
-const STATUS_LABELS: Record<DeploymentStatus, string> = {
-  QUEUED: "Queued",
-  CLONING: "Cloning",
-  BUILDING: "Building",
-  STARTING: "Starting",
-  RUNNING: "Running",
-  FAILED: "Failed",
-  STOPPED: "Stopped",
-};
-
-const STATUS_STYLES: Record<DeploymentStatus, string> = {
-  QUEUED: "border-slate-200 bg-slate-100 text-slate-700",
-  CLONING: "border-blue-200 bg-blue-50 text-blue-700",
-  BUILDING: "border-amber-200 bg-amber-50 text-amber-800",
-  STARTING: "border-violet-200 bg-violet-50 text-violet-700",
-  RUNNING: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  FAILED: "border-red-200 bg-red-50 text-red-700",
-  STOPPED: "border-slate-300 bg-white text-slate-600",
-};
-
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-const formatDate = (value: string): string => {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Unknown time" : dateFormatter.format(date);
 };
 
 const repositoryName = (repositoryUrl: string): string =>
@@ -45,7 +22,9 @@ export function ProjectCard({ project }: { project: ProjectWithLatestDeployment 
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="truncate text-lg font-semibold tracking-tight text-slate-950">
-            {project.name}
+            <Link className="hover:text-blue-700" href={`/projects/${project.id}`}>
+              {project.name}
+            </Link>
           </h2>
           <a
             className="mt-1.5 block truncate text-sm font-medium text-blue-700 hover:text-blue-800 hover:underline"
@@ -63,9 +42,9 @@ export function ProjectCard({ project }: { project: ProjectWithLatestDeployment 
           </span>
         ) : (
           <span
-            className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[latest.status]}`}
+            className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${DEPLOYMENT_STATUS_STYLES[latest.status]}`}
           >
-            {STATUS_LABELS[latest.status]}
+            {DEPLOYMENT_STATUS_LABELS[latest.status]}
           </span>
         )}
       </div>
@@ -100,9 +79,15 @@ export function ProjectCard({ project }: { project: ProjectWithLatestDeployment 
             className="mt-1.5 block text-sm font-medium text-slate-700"
             dateTime={latest.createdAt}
           >
-            {formatDate(latest.createdAt)}
+            {formatDateTime(latest.createdAt)}
           </time>
         )}
+        <Link
+          className="mt-4 inline-flex text-sm font-semibold text-blue-700 hover:text-blue-800"
+          href={`/projects/${project.id}`}
+        >
+          View project <span aria-hidden="true">→</span>
+        </Link>
       </div>
     </article>
   );

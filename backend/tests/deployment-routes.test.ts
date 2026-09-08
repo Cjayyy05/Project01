@@ -300,7 +300,7 @@ describe('deployment REST endpoints', () => {
     });
   });
 
-  it('redeploys into a new record while preserving the old deployment', async () => {
+  it('stops the previous running deployment only after redeploy succeeds', async () => {
     const response = await request(createApp())
       .post(`/api/deployments/${oldDeploymentId}/redeploy`)
       .set('Authorization', authorization);
@@ -313,12 +313,68 @@ describe('deployment REST endpoints', () => {
         status: DeploymentStatus.RUNNING,
       },
     });
-    expect(records.get(oldDeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(oldDeploymentId)).toMatchObject({
+      id: oldDeploymentId,
+      status: DeploymentStatus.STOPPED,
+      containerId,
+    });
+    expect(records.get(oldDeploymentId)?.finishedAt).toBeInstanceOf(Date);
+    expect(records.get(newDeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.size).toBe(2);
     expect(databaseMocks.deploymentCreate).toHaveBeenCalledOnce();
     expect(infrastructureMocks.prepareRepository).toHaveBeenCalledWith({
       repositoryUrl: project.repositoryUrl,
       branch: project.branch,
     });
+    expect(infrastructureMocks.stopContainer).toHaveBeenCalledWith(containerId);
+    const [startCallOrder] =
+      infrastructureMocks.startContainer.mock.invocationCallOrder;
+    const [stopCallOrder] =
+      infrastructureMocks.stopContainer.mock.invocationCallOrder;
+    if (startCallOrder === undefined || stopCallOrder === undefined) {
+      throw new Error('Expected both container lifecycle calls');
+    }
+    expect(startCallOrder).toBeLessThan(stopCallOrder);
+    expect(infrastructureMocks.removeImage).not.toHaveBeenCalled();
+  });
+
+  it('leaves the previous deployment running when redeploy fails', async () => {
+    infrastructureMocks.buildImage.mockRejectedValue(
+      new Error('build failed with an internal registry detail'),
+    );
+
+    const response = await request(createApp())
+      .post(`/api/deployments/${oldDeploymentId}/redeploy`)
+      .set('Authorization', authorization);
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({
+      error: { message: 'Docker image build failed' },
+    });
+    expect(records.get(oldDeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(newDeploymentId)?.status).toBe(DeploymentStatus.FAILED);
+    expect(infrastructureMocks.stopContainer).not.toHaveBeenCalled();
+  });
+
+  it('checks ownership before starting a redeploy', async () => {
+    databaseMocks.deploymentFindFirst.mockResolvedValue(null);
+
+    const response = await request(createApp())
+      .post(`/api/deployments/${oldDeploymentId}/redeploy`)
+      .set('Authorization', authorization);
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({
+      error: { message: 'Deployment not found' },
+    });
+    expect(databaseMocks.deploymentFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: oldDeploymentId, project: { userId } },
+      }),
+    );
+    expect(databaseMocks.deploymentCreate).not.toHaveBeenCalled();
+    expect(infrastructureMocks.prepareRepository).not.toHaveBeenCalled();
+    expect(infrastructureMocks.stopContainer).not.toHaveBeenCalled();
   });
 
   it('checks deployment ownership before returning metrics', async () => {

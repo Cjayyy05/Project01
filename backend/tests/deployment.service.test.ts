@@ -13,8 +13,11 @@ import {
 import { AppError } from '../src/utils/app-error.js';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
+const userId = '99999999-9999-4999-8999-999999999999';
 const deploymentId = '22222222-2222-4222-8222-222222222222';
+const redeploymentId = '33333333-3333-4333-8333-333333333333';
 const containerId = 'a'.repeat(64);
+const previousContainerId = 'd'.repeat(64);
 const commitHash = 'b'.repeat(40);
 const imageId = `sha256:${'c'.repeat(64)}`;
 const imageTag =
@@ -201,6 +204,47 @@ describe('DeploymentService', () => {
       now: () => now,
     });
 
+  const configureRedeployRecords = () => {
+    const previousDeployment: DeploymentRecord = {
+      ...currentDeployment,
+      status: DeploymentStatus.RUNNING,
+      containerId: previousContainerId,
+      imageId,
+      imageTag: `deployflow/project-${projectId}/deployment-${deploymentId}`,
+      hostPort: 49_152,
+      startedAt: now,
+    };
+    const records = new Map<string, DeploymentRecord>([
+      [previousDeployment.id, previousDeployment],
+    ]);
+
+    findOwnedDeployment.mockResolvedValue({ ...previousDeployment, project });
+    createDeployment.mockImplementation(({ data }) => {
+      const replacement: DeploymentRecord = {
+        ...currentDeployment,
+        id: redeploymentId,
+        ...data,
+      };
+      records.set(replacement.id, replacement);
+      currentDeployment = replacement;
+      return Promise.resolve(replacement);
+    });
+    updateDeployment.mockImplementation(({ where, data }) => {
+      const existing = records.get(where.id);
+      if (existing === undefined) return Promise.reject(new Error('not found'));
+
+      const updated = { ...existing, ...data, updatedAt: now };
+      records.set(updated.id, updated);
+      if (updated.id === redeploymentId) currentDeployment = updated;
+      return Promise.resolve(updated);
+    });
+    findDeployments.mockImplementation(() =>
+      Promise.resolve([...records.values()]),
+    );
+
+    return records;
+  };
+
   const recordedStatuses = () => [
     DeploymentStatus.QUEUED,
     ...updateDeployment.mock.calls.flatMap(([options]) =>
@@ -264,6 +308,68 @@ describe('DeploymentService', () => {
     expect(events.at(-1)).toEqual({ type: 'completed', deployment: result });
     expect(removeImage).not.toHaveBeenCalled();
     expect(removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('cuts over a successful redeploy and preserves both deployment records', async () => {
+    const records = configureRedeployRecords();
+    const stopContainer = vi.mocked(containerService.stopContainer);
+    const events: DeploymentEvent[] = [];
+
+    const result = await createService().redeployDeployment(
+      userId,
+      deploymentId,
+      (event) => events.push(event),
+    );
+
+    expect(result).toMatchObject({
+      id: redeploymentId,
+      status: DeploymentStatus.RUNNING,
+      containerId,
+    });
+    expect(records.get(deploymentId)).toMatchObject({
+      id: deploymentId,
+      status: DeploymentStatus.STOPPED,
+      containerId: previousContainerId,
+      finishedAt: now,
+    });
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.size).toBe(2);
+    expect(stopContainer).toHaveBeenCalledWith(previousContainerId);
+    const runningUpdateIndex = updateDeployment.mock.calls.findIndex(
+      ([options]) =>
+        options.where.id === redeploymentId &&
+        options.data.status === DeploymentStatus.RUNNING,
+    );
+    const runningUpdateCallOrder =
+      updateDeployment.mock.invocationCallOrder[runningUpdateIndex];
+    const [stopCallOrder] = stopContainer.mock.invocationCallOrder;
+    if (runningUpdateCallOrder === undefined || stopCallOrder === undefined) {
+      throw new Error('Expected running persistence before old-container stop');
+    }
+    expect(runningUpdateCallOrder).toBeLessThan(stopCallOrder);
+    expect(events).toContainEqual({
+      type: 'status',
+      deploymentId,
+      status: DeploymentStatus.STOPPED,
+    });
+    expect(removeImage).not.toHaveBeenCalled();
+  });
+
+  it('does not stop the previous deployment when its replacement fails', async () => {
+    const records = configureRedeployRecords();
+    const stopContainer = vi.mocked(containerService.stopContainer);
+    buildImage.mockRejectedValue(new AppError(422, 'Docker image build failed'));
+
+    await expect(
+      createService().redeployDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: 'Docker image build failed',
+    });
+
+    expect(records.get(deploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.FAILED);
+    expect(stopContainer).not.toHaveBeenCalled();
   });
 
   it('marks a clone failure without exposing the infrastructure error', async () => {

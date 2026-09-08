@@ -37,7 +37,15 @@ export type DeploymentStatus =
 export type Deployment = {
   id: string;
   projectId: string;
+  commitHash: string | null;
   status: DeploymentStatus;
+  containerId: string | null;
+  imageId: string | null;
+  imageTag: string | null;
+  hostPort: number | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -46,6 +54,7 @@ type UserResponse = { user: AuthUser };
 type LoginResponse = UserResponse & { token: string };
 type ProjectResponse = { project: Project };
 type ProjectsResponse = { projects: Project[] };
+type DeploymentResponse = { deployment: Deployment };
 type DeploymentsResponse = { deployments: Deployment[] };
 type ErrorResponse = { error?: { message?: unknown } };
 
@@ -153,6 +162,18 @@ export const projectApi = {
     return response.project;
   },
 
+  async get(
+    token: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<Project> {
+    const response = await request<ProjectResponse>(
+      `/projects/${encodeURIComponent(projectId)}`,
+      { token, signal },
+    );
+    return response.project;
+  },
+
   async listDeployments(
     token: string,
     projectId: string,
@@ -163,5 +184,46 @@ export const projectApi = {
       { token, signal },
     );
     return response.deployments;
+  },
+};
+
+const deploymentAction = async (
+  token: string,
+  path: string,
+): Promise<Deployment> => {
+  const response = await request<DeploymentResponse>(path, {
+    method: "POST",
+    token,
+  });
+  return response.deployment;
+};
+
+export const deploymentApi = {
+  async deploy(token: string, projectId: string): Promise<Deployment> {
+    return deploymentAction(
+      token,
+      `/projects/${encodeURIComponent(projectId)}/deploy`,
+    );
+  },
+
+  async stop(token: string, deploymentId: string): Promise<Deployment> {
+    return deploymentAction(
+      token,
+      `/deployments/${encodeURIComponent(deploymentId)}/stop`,
+    );
+  },
+
+  async restart(token: string, deploymentId: string): Promise<Deployment> {
+    return deploymentAction(
+      token,
+      `/deployments/${encodeURIComponent(deploymentId)}/restart`,
+    );
+  },
+
+  async redeploy(token: string, deploymentId: string): Promise<Deployment> {
+    return deploymentAction(
+      token,
+      `/deployments/${encodeURIComponent(deploymentId)}/redeploy`,
+    );
   },
 };
