@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { DeploymentLogsPanel } from "@/components/deployment-logs-panel";
 import { useAuth } from "@/context/auth-context";
 import {
   ApiError,
@@ -34,6 +35,8 @@ const ACTION_PENDING_LABELS: Record<DeploymentAction, string> = {
   restart: "Restarting…",
   redeploy: "Redeploying…",
 };
+
+const NEW_DEPLOYMENT_POLL_INTERVAL_MS = 150;
 
 function StatusBadge({ status }: { status: Deployment["status"] }) {
   return (
@@ -69,6 +72,9 @@ export default function ProjectDetailsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<DeploymentAction | null>(null);
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(
+    null,
+  );
 
   const loadProject = useCallback(
     async (signal?: AbortSignal, showLoading = true) => {
@@ -84,6 +90,12 @@ export default function ProjectDetailsPage() {
         ]);
         setProject(projectResult);
         setDeployments(deploymentResult);
+        setSelectedDeploymentId((current) =>
+          current !== null &&
+          deploymentResult.some((deployment) => deployment.id === current)
+            ? current
+            : (deploymentResult[0]?.id ?? null),
+        );
       } catch (requestError: unknown) {
         if (signal?.aborted === true) return;
 
@@ -101,6 +113,42 @@ export default function ProjectDetailsPage() {
         );
       } finally {
         if (showLoading && signal?.aborted !== true) setIsLoading(false);
+      }
+    },
+    [logout, projectId, token],
+  );
+
+  const trackNewDeployment = useCallback(
+    async (knownDeploymentIds: Set<string>, signal: AbortSignal) => {
+      if (token === null) return;
+
+      while (!signal.aborted) {
+        try {
+          const deploymentResult = await projectApi.listDeployments(
+            token,
+            projectId,
+            signal,
+          );
+          const newDeployment = deploymentResult.find(
+            (deployment) => !knownDeploymentIds.has(deployment.id),
+          );
+
+          if (newDeployment !== undefined) {
+            setDeployments(deploymentResult);
+            setSelectedDeploymentId(newDeployment.id);
+            return;
+          }
+        } catch (requestError: unknown) {
+          if (signal.aborted) return;
+          if (requestError instanceof ApiError && requestError.status === 401) {
+            logout();
+          }
+          return;
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, NEW_DEPLOYMENT_POLL_INTERVAL_MS),
+        );
       }
     },
     [logout, projectId, token],
@@ -140,21 +188,40 @@ export default function ProjectDetailsPage() {
 
     setPendingAction(action);
     setActionError(null);
+    const trackingController = new AbortController();
+    const tracksNewDeployment = action === "deploy" || action === "redeploy";
+    const trackingPromise = tracksNewDeployment
+      ? trackNewDeployment(
+          new Set(deployments.map((deployment) => deployment.id)),
+          trackingController.signal,
+        )
+      : Promise.resolve();
 
     try {
+      let actionDeployment: Deployment | null = null;
+
       if (action === "deploy") {
-        await deploymentApi.deploy(token, projectId);
+        actionDeployment = await deploymentApi.deploy(token, projectId);
       } else if (latestDeployment !== null) {
         if (action === "stop") {
-          await deploymentApi.stop(token, latestDeployment.id);
+          actionDeployment = await deploymentApi.stop(token, latestDeployment.id);
         } else if (action === "restart") {
-          await deploymentApi.restart(token, latestDeployment.id);
+          actionDeployment = await deploymentApi.restart(
+            token,
+            latestDeployment.id,
+          );
         } else {
-          await deploymentApi.redeploy(token, latestDeployment.id);
+          actionDeployment = await deploymentApi.redeploy(
+            token,
+            latestDeployment.id,
+          );
         }
       }
 
       await loadProject(undefined, false);
+      if (actionDeployment !== null) {
+        setSelectedDeploymentId(actionDeployment.id);
+      }
     } catch (requestError: unknown) {
       if (requestError instanceof ApiError && requestError.status === 401) {
         logout();
@@ -166,7 +233,10 @@ export default function ProjectDetailsPage() {
           ? requestError.message
           : `${ACTION_LABELS[action]} could not be completed.`,
       );
+      await loadProject(undefined, false);
     } finally {
+      trackingController.abort();
+      await trackingPromise;
       setPendingAction(null);
     }
   };
@@ -390,6 +460,16 @@ export default function ProjectDetailsPage() {
               </section>
             </div>
 
+            {token !== null ? (
+              <DeploymentLogsPanel
+                deployments={deployments}
+                key={selectedDeploymentId ?? "no-deployment"}
+                onSelectDeployment={setSelectedDeploymentId}
+                selectedDeploymentId={selectedDeploymentId}
+                token={token}
+              />
+            ) : null}
+
             <section className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-200 px-6 py-5">
                 <h2 className="text-lg font-semibold tracking-tight text-slate-950">
@@ -419,9 +499,24 @@ export default function ProjectDetailsPage() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {deployments.map((deployment) => (
-                        <tr className="text-slate-700" key={deployment.id}>
+                        <tr
+                          className={
+                            deployment.id === selectedDeploymentId
+                              ? "bg-blue-50/60 text-slate-700"
+                              : "text-slate-700"
+                          }
+                          key={deployment.id}
+                        >
                           <td className="px-6 py-4 font-mono text-xs text-slate-800">
-                            {deployment.id}
+                            <button
+                              aria-pressed={deployment.id === selectedDeploymentId}
+                              className="text-left hover:text-blue-700 hover:underline"
+                              onClick={() => setSelectedDeploymentId(deployment.id)}
+                              title="Show live events for this deployment"
+                              type="button"
+                            >
+                              {deployment.id}
+                            </button>
                           </td>
                           <td className="px-4 py-4">
                             <StatusBadge status={deployment.status} />

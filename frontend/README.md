@@ -9,6 +9,7 @@ Next.js App Router frontend for DeployFlow, built with strict TypeScript and Tai
 3. Run `npm run dev` and open `http://localhost:3000`.
 
 Browser requests to `/backend-api/*` are proxied to the Express API using `BACKEND_API_URL`, avoiding a cross-origin dependency in local development.
+The live deployment event connection uses `NEXT_PUBLIC_SOCKET_URL` from the browser and defaults to `http://localhost:4000`.
 
 ## Commands
 
