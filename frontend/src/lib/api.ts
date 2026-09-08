@@ -7,8 +7,46 @@ export type AuthUser = {
   updatedAt: string;
 };
 
+export type Project = {
+  id: string;
+  userId: string;
+  name: string;
+  repositoryUrl: string;
+  branch: string;
+  containerPort: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateProjectInput = {
+  name: string;
+  repositoryUrl: string;
+  branch: string;
+  containerPort: number;
+};
+
+export type DeploymentStatus =
+  | "QUEUED"
+  | "CLONING"
+  | "BUILDING"
+  | "STARTING"
+  | "RUNNING"
+  | "FAILED"
+  | "STOPPED";
+
+export type Deployment = {
+  id: string;
+  projectId: string;
+  status: DeploymentStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type UserResponse = { user: AuthUser };
 type LoginResponse = UserResponse & { token: string };
+type ProjectResponse = { project: Project };
+type ProjectsResponse = { projects: Project[] };
+type DeploymentsResponse = { deployments: Deployment[] };
 type ErrorResponse = { error?: { message?: unknown } };
 
 export class ApiError extends Error {
@@ -94,5 +132,36 @@ export const authApi = {
       signal,
     });
     return response.user;
+  },
+};
+
+export const projectApi = {
+  async list(token: string, signal?: AbortSignal): Promise<Project[]> {
+    const response = await request<ProjectsResponse>("/projects", {
+      token,
+      signal,
+    });
+    return response.projects;
+  },
+
+  async create(token: string, input: CreateProjectInput): Promise<Project> {
+    const response = await request<ProjectResponse>("/projects", {
+      method: "POST",
+      token,
+      body: JSON.stringify(input),
+    });
+    return response.project;
+  },
+
+  async listDeployments(
+    token: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<Deployment[]> {
+    const response = await request<DeploymentsResponse>(
+      `/projects/${encodeURIComponent(projectId)}/deployments`,
+      { token, signal },
+    );
+    return response.deployments;
   },
 };
