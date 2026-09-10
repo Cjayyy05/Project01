@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { DeploymentLogsPanel } from "@/components/deployment-logs-panel";
+import { DeploymentMetricsPanel } from "@/components/deployment-metrics-panel";
 import { useAuth } from "@/context/auth-context";
 import {
   ApiError,
@@ -163,6 +164,8 @@ export default function ProjectDetailsPage() {
   }, [loadProject]);
 
   const latestDeployment = deployments[0] ?? null;
+  const selectedDeployment =
+    deployments.find((deployment) => deployment.id === selectedDeploymentId) ?? null;
   const deploymentBusy =
     latestDeployment !== null && isDeploymentInProgress(latestDeployment.status);
   const actionsBusy = pendingAction !== null || deploymentBusy;
@@ -461,13 +464,21 @@ export default function ProjectDetailsPage() {
             </div>
 
             {token !== null ? (
-              <DeploymentLogsPanel
-                deployments={deployments}
-                key={selectedDeploymentId ?? "no-deployment"}
-                onSelectDeployment={setSelectedDeploymentId}
-                selectedDeploymentId={selectedDeploymentId}
-                token={token}
-              />
+              <>
+                <DeploymentMetricsPanel
+                  deployment={selectedDeployment}
+                  key={`${selectedDeployment?.id ?? "no-deployment"}:${selectedDeployment?.status ?? "none"}`}
+                  onUnauthorized={logout}
+                  token={token}
+                />
+                <DeploymentLogsPanel
+                  deployments={deployments}
+                  key={selectedDeploymentId ?? "no-deployment"}
+                  onSelectDeployment={setSelectedDeploymentId}
+                  selectedDeploymentId={selectedDeploymentId}
+                  token={token}
+                />
+              </>
             ) : null}
 
             <section className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">

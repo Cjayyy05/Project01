@@ -50,12 +50,32 @@ export type Deployment = {
   updatedAt: string;
 };
 
+export type DeploymentMetrics = {
+  status: DeploymentStatus;
+  cpu: {
+    usagePercent: number;
+    totalUsage: number;
+    systemUsage: number;
+    onlineCpus: number;
+  };
+  memory: {
+    usageBytes: number;
+    limitBytes: number;
+    usagePercent: number;
+  };
+  uptime: {
+    startedAt: string | null;
+    uptimeSeconds: number;
+  };
+};
+
 type UserResponse = { user: AuthUser };
 type LoginResponse = UserResponse & { token: string };
 type ProjectResponse = { project: Project };
 type ProjectsResponse = { projects: Project[] };
 type DeploymentResponse = { deployment: Deployment };
 type DeploymentsResponse = { deployments: Deployment[] };
+type DeploymentMetricsResponse = { metrics: DeploymentMetrics };
 type ErrorResponse = { error?: { message?: unknown } };
 
 export class ApiError extends Error {
@@ -225,5 +245,17 @@ export const deploymentApi = {
       token,
       `/deployments/${encodeURIComponent(deploymentId)}/redeploy`,
     );
+  },
+
+  async getMetrics(
+    token: string,
+    deploymentId: string,
+    signal?: AbortSignal,
+  ): Promise<DeploymentMetrics> {
+    const response = await request<DeploymentMetricsResponse>(
+      `/deployments/${encodeURIComponent(deploymentId)}/metrics`,
+      { token, signal },
+    );
+    return response.metrics;
   },
 };
