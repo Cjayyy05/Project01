@@ -6,6 +6,7 @@ const databaseMocks = vi.hoisted(() => ({
   deleteMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(),
   findFirst: vi.fn<(args: unknown) => Promise<unknown>>(),
   findMany: vi.fn<(args: unknown) => Promise<unknown[]>>(),
+  updateMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(),
 }));
 
 vi.mock('../src/config/database.js', () => ({
@@ -27,6 +28,7 @@ const project = {
   repositoryUrl: 'https://github.com/example/example-api',
   branch: 'main',
   containerPort: 3000,
+  healthCheckPath: '/',
   createdAt: now,
   updatedAt: now,
 };
@@ -42,6 +44,7 @@ beforeEach(() => {
   databaseMocks.deleteMany.mockReset();
   databaseMocks.findFirst.mockReset();
   databaseMocks.findMany.mockReset();
+  databaseMocks.updateMany.mockReset();
 });
 
 describe('POST /api/projects', () => {
@@ -75,6 +78,7 @@ describe('POST /api/projects', () => {
       repositoryUrl: 'https://github.com/example/example-api',
       branch: 'main',
       containerPort: 3000,
+      healthCheckPath: '/',
     });
     expect(createArgs.select).toBeDefined();
   });
@@ -114,6 +118,47 @@ describe('POST /api/projects', () => {
     });
     expect(databaseMocks.create).not.toHaveBeenCalled();
   });
+
+  it('accepts an application-relative health-check path', async () => {
+    databaseMocks.create.mockResolvedValue({
+      ...project,
+      healthCheckPath: '/api/health',
+    });
+
+    const response = await request(createApp())
+      .post('/api/projects')
+      .set('Authorization', authorization)
+      .send({
+        name: 'Example API',
+        repositoryUrl: 'https://github.com/example/example-api',
+        containerPort: 3000,
+        healthCheckPath: '/api/health',
+      });
+
+    expect(response.status).toBe(201);
+    const createArgs = databaseMocks.create.mock.calls[0]?.[0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createArgs.data.healthCheckPath).toBe('/api/health');
+  });
+
+  it.each(['https://example.com', '//evil.com', 'ftp://example.com'])(
+    'rejects external health-check target %s',
+    async (healthCheckPath) => {
+      const response = await request(createApp())
+        .post('/api/projects')
+        .set('Authorization', authorization)
+        .send({
+          name: 'Example API',
+          repositoryUrl: 'https://github.com/example/example-api',
+          containerPort: 3000,
+          healthCheckPath,
+        });
+
+      expect(response.status).toBe(400);
+      expect(databaseMocks.create).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects unauthenticated access', async () => {
     const response = await request(createApp()).post('/api/projects').send({
@@ -185,6 +230,38 @@ describe('GET /api/projects/:id', () => {
       where: Record<string, unknown>;
     };
     expect(getArgs.where).toEqual({ id: projectId, userId });
+  });
+});
+
+describe('PATCH /api/projects/:id', () => {
+  it('updates the health-check path for an owned project', async () => {
+    const updatedProject = { ...project, healthCheckPath: '/health' };
+    databaseMocks.updateMany.mockResolvedValue({ count: 1 });
+    databaseMocks.findFirst.mockResolvedValue(updatedProject);
+
+    const response = await request(createApp())
+      .patch(`/api/projects/${projectId}`)
+      .set('Authorization', authorization)
+      .send({ healthCheckPath: '/health' });
+
+    expect(response.status).toBe(200);
+    expect(databaseMocks.updateMany).toHaveBeenCalledWith({
+      where: { id: projectId, userId },
+      data: { healthCheckPath: '/health' },
+    });
+    expect(response.body).toMatchObject({
+      project: { id: projectId, healthCheckPath: '/health' },
+    });
+  });
+
+  it('rejects an external URL before updating the project', async () => {
+    const response = await request(createApp())
+      .patch(`/api/projects/${projectId}`)
+      .set('Authorization', authorization)
+      .send({ healthCheckPath: 'https://example.com' });
+
+    expect(response.status).toBe(400);
+    expect(databaseMocks.updateMany).not.toHaveBeenCalled();
   });
 });
 

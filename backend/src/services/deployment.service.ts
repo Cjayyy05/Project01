@@ -4,6 +4,7 @@ import {
   type DeploymentStatus as DeploymentStatusValue,
 } from '../generated/prisma/enums.js';
 import { AppError } from '../utils/app-error.js';
+import { applicationHealthCheckService } from './application-health-check.service.js';
 import {
   applicationDetector,
   type DetectedApplicationType,
@@ -33,6 +34,7 @@ export type DeploymentProject = {
   repositoryUrl: string;
   branch: string;
   containerPort: number;
+  healthCheckPath: string;
 };
 
 export type DeploymentRecord = {
@@ -110,6 +112,7 @@ export type DeploymentDatabase = {
         repositoryUrl: true;
         branch: true;
         containerPort: true;
+        healthCheckPath: true;
       };
     }) => Promise<DeploymentProject | null>;
     findFirst: (options: {
@@ -119,6 +122,7 @@ export type DeploymentDatabase = {
         repositoryUrl: true;
         branch: true;
         containerPort: true;
+        healthCheckPath: true;
       };
     }) => Promise<DeploymentProject | null>;
   };
@@ -147,6 +151,7 @@ export type DeploymentDatabase = {
             repositoryUrl: true;
             branch: true;
             containerPort: true;
+            healthCheckPath: true;
           };
         };
       };
@@ -162,6 +167,11 @@ export type DeploymentGitService = Pick<
 export type DeploymentApplicationDetector = Pick<
   typeof applicationDetector,
   'prepareBuild'
+>;
+
+export type DeploymentHealthCheckService = Pick<
+  typeof applicationHealthCheckService,
+  'waitUntilHealthy'
 >;
 
 export type DeploymentBuildService = Pick<
@@ -185,6 +195,7 @@ export type DeploymentServiceDependencies = {
   database?: DeploymentDatabase;
   gitService?: DeploymentGitService;
   applicationDetector?: DeploymentApplicationDetector;
+  healthCheckService?: DeploymentHealthCheckService;
   buildService?: DeploymentBuildService;
   containerService?: DeploymentContainerService;
   now?: () => Date;
@@ -225,6 +236,8 @@ const getSafeFailureMessage = (
       return 'Docker image build failed';
     case DeploymentStatus.STARTING:
       return 'Container startup failed';
+    case DeploymentStatus.HEALTHCHECKING:
+      return 'Application health check failed';
     case DeploymentStatus.RUNNING:
       return 'Deployment cleanup failed';
     default:
@@ -236,6 +249,7 @@ export class DeploymentService {
   readonly #database: DeploymentDatabase;
   readonly #gitService: DeploymentGitService;
   readonly #applicationDetector: DeploymentApplicationDetector;
+  readonly #healthCheckService: DeploymentHealthCheckService;
   readonly #buildService: DeploymentBuildService;
   readonly #containerService: DeploymentContainerService;
   readonly #now: () => Date;
@@ -245,6 +259,8 @@ export class DeploymentService {
     this.#gitService = dependencies.gitService ?? gitRepositoryService;
     this.#applicationDetector =
       dependencies.applicationDetector ?? applicationDetector;
+    this.#healthCheckService =
+      dependencies.healthCheckService ?? applicationHealthCheckService;
     this.#buildService = dependencies.buildService ?? dockerBuildService;
     this.#containerService =
       dependencies.containerService ?? containerService;
@@ -324,6 +340,7 @@ export class DeploymentService {
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
     const containerId = this.#requireContainerId(deployment);
+    let containerRestarted = false;
 
     try {
       await this.#updateDeployment(deployment.id, {
@@ -338,6 +355,25 @@ export class DeploymentService {
         containerId,
         deployment.project.containerPort,
       );
+      containerRestarted = true;
+      await this.#updateDeployment(deployment.id, {
+        hostPort: restartedContainer.hostPort,
+      });
+      await this.#changeStatus(
+        deployment.id,
+        DeploymentStatus.HEALTHCHECKING,
+        onEvent,
+      );
+      this.#emitLog(
+        onEvent,
+        deployment.id,
+        'deployment',
+        `Checking application health at ${deployment.project.healthCheckPath}`,
+      );
+      await this.#healthCheckService.waitUntilHealthy({
+        hostPort: restartedContainer.hostPort,
+        path: deployment.project.healthCheckPath,
+      });
       const runningDeployment = await this.#updateDeployment(deployment.id, {
         status: DeploymentStatus.RUNNING,
         hostPort: restartedContainer.hostPort,
@@ -354,6 +390,14 @@ export class DeploymentService {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof AppError ? error.message : 'Unable to restart deployment';
+
+      if (containerRestarted) {
+        try {
+          await this.#containerService.stopContainer(containerId);
+        } catch {
+          // Preserve the health-check or restart failure.
+        }
+      }
 
       try {
         const failedDeployment = await this.#updateDeployment(deployment.id, {
@@ -479,6 +523,7 @@ export class DeploymentService {
           repositoryUrl: true,
           branch: true,
           containerPort: true,
+          healthCheckPath: true,
         },
       });
     } catch {
@@ -560,6 +605,19 @@ export class DeploymentService {
       deployment = await this.#updateDeployment(deployment.id, {
         containerId: startedContainer.containerId,
         hostPort: startedContainer.hostPort,
+      });
+
+      stage = DeploymentStatus.HEALTHCHECKING;
+      deployment = await this.#changeStatus(deployment.id, stage, onEvent);
+      this.#emitLog(
+        onEvent,
+        deployment.id,
+        'deployment',
+        `Checking application health at ${project.healthCheckPath}`,
+      );
+      await this.#healthCheckService.waitUntilHealthy({
+        hostPort: startedContainer.hostPort,
+        path: project.healthCheckPath,
       });
 
       stage = DeploymentStatus.RUNNING;
@@ -739,6 +797,19 @@ export class DeploymentService {
         hostPort: startedContainer.hostPort,
       });
 
+      stage = DeploymentStatus.HEALTHCHECKING;
+      deployment = await this.#changeStatus(deployment.id, stage, onEvent);
+      this.#emitLog(
+        onEvent,
+        deployment.id,
+        'deployment',
+        `Checking application health at ${sourceDeployment.project.healthCheckPath}`,
+      );
+      await this.#healthCheckService.waitUntilHealthy({
+        hostPort: startedContainer.hostPort,
+        path: sourceDeployment.project.healthCheckPath,
+      });
+
       stage = DeploymentStatus.RUNNING;
       deployment = await this.#updateDeployment(deployment.id, {
         status: stage,
@@ -831,6 +902,7 @@ export class DeploymentService {
         repositoryUrl: true,
         branch: true,
         containerPort: true,
+        healthCheckPath: true,
       },
     });
 
@@ -851,6 +923,7 @@ export class DeploymentService {
             repositoryUrl: true,
             branch: true,
             containerPort: true,
+            healthCheckPath: true,
           },
         },
       },

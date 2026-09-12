@@ -1,5 +1,6 @@
 import { AppError } from './app-error.js';
 import { parseGitHubRepositoryUrl } from './github-repository.js';
+import { parseHealthCheckPath } from './health-check-path.js';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -9,6 +10,7 @@ type ProjectInput = {
   repositoryUrl: string;
   branch: string;
   containerPort: number;
+  healthCheckPath: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -54,7 +56,22 @@ export const parseProjectInput = (body: unknown): ProjectInput => {
     repositoryUrl,
     branch: branch.trim(),
     containerPort: body.containerPort,
+    healthCheckPath: parseHealthCheckPath(body.healthCheckPath),
   };
+};
+
+export const parseProjectHealthCheckInput = (
+  body: unknown,
+): { healthCheckPath: string } => {
+  if (!isRecord(body)) {
+    throw new AppError(400, 'Request body must be a JSON object');
+  }
+
+  if (body.healthCheckPath === undefined) {
+    throw new AppError(400, 'Health-check path is required');
+  }
+
+  return { healthCheckPath: parseHealthCheckPath(body.healthCheckPath) };
 };
 
 export const parseProjectId = (value: unknown): string => {

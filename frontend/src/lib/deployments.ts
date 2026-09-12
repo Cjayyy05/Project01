@@ -5,6 +5,7 @@ export const DEPLOYMENT_STATUS_LABELS: Record<DeploymentStatus, string> = {
   CLONING: "Cloning",
   BUILDING: "Building",
   STARTING: "Starting",
+  HEALTHCHECKING: "Health checking",
   RUNNING: "Running",
   FAILED: "Failed",
   STOPPED: "Stopped",
@@ -15,6 +16,7 @@ export const DEPLOYMENT_STATUS_STYLES: Record<DeploymentStatus, string> = {
   CLONING: "border-blue-200 bg-blue-50 text-blue-700",
   BUILDING: "border-amber-200 bg-amber-50 text-amber-800",
   STARTING: "border-violet-200 bg-violet-50 text-violet-700",
+  HEALTHCHECKING: "border-cyan-200 bg-cyan-50 text-cyan-800",
   RUNNING: "border-emerald-200 bg-emerald-50 text-emerald-700",
   FAILED: "border-red-200 bg-red-50 text-red-700",
   STOPPED: "border-slate-300 bg-white text-slate-600",
@@ -24,7 +26,8 @@ export const isDeploymentInProgress = (status: DeploymentStatus): boolean =>
   status === "QUEUED" ||
   status === "CLONING" ||
   status === "BUILDING" ||
-  status === "STARTING";
+  status === "STARTING" ||
+  status === "HEALTHCHECKING";
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",

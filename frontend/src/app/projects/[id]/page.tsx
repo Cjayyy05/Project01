@@ -40,6 +40,14 @@ const ACTION_PENDING_LABELS: Record<DeploymentAction, string> = {
 
 const NEW_DEPLOYMENT_POLL_INTERVAL_MS = 150;
 
+const isValidHealthCheckPath = (value: string): boolean =>
+  value.length > 0 &&
+  value.length <= 1024 &&
+  value.startsWith("/") &&
+  !value.startsWith("//") &&
+  /^[A-Za-z0-9\-._~!$&'()*+,;=:@/%]+$/.test(value) &&
+  !/[\u0000-\u001f\u007f\\?#]/.test(value);
+
 const APPLICATION_TYPE_LABELS: Record<
   NonNullable<Deployment["applicationType"]>,
   string
@@ -85,6 +93,8 @@ export default function ProjectDetailsPage() {
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<DeploymentAction | null>(null);
   const [pendingRollbackId, setPendingRollbackId] = useState<string | null>(null);
+  const [healthCheckPath, setHealthCheckPath] = useState("/");
+  const [isSavingHealthCheck, setIsSavingHealthCheck] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(
     null,
   );
@@ -102,6 +112,7 @@ export default function ProjectDetailsPage() {
           projectApi.listDeployments(token, projectId, signal),
         ]);
         setProject(projectResult);
+        setHealthCheckPath(projectResult.healthCheckPath);
         setDeployments(deploymentResult);
         setSelectedDeploymentId((current) =>
           current !== null &&
@@ -303,6 +314,41 @@ export default function ProjectDetailsPage() {
       trackingController.abort();
       await trackingPromise;
       setPendingRollbackId(null);
+    }
+  };
+
+  const saveHealthCheckPath = async () => {
+    if (token === null || project === null || isSavingHealthCheck) return;
+    const normalizedPath = healthCheckPath.trim();
+    if (!isValidHealthCheckPath(normalizedPath)) {
+      setActionError("Health-check path must start with /, such as /health.");
+      return;
+    }
+
+    setIsSavingHealthCheck(true);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const updatedProject = await projectApi.updateHealthCheckPath(
+        token,
+        project.id,
+        normalizedPath,
+      );
+      setProject(updatedProject);
+      setHealthCheckPath(updatedProject.healthCheckPath);
+      setActionSuccess("Health-check path updated.");
+    } catch (requestError: unknown) {
+      if (requestError instanceof ApiError && requestError.status === 401) {
+        logout();
+        return;
+      }
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Health-check path could not be updated.",
+      );
+    } finally {
+      setIsSavingHealthCheck(false);
     }
   };
 
@@ -540,6 +586,36 @@ export default function ProjectDetailsPage() {
                     </dt>
                     <dd className="mt-1.5 font-mono text-sm text-slate-800">
                       {project.containerPort}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-medium tracking-wide text-slate-500 uppercase">
+                      Health-check path
+                    </dt>
+                    <dd className="mt-2">
+                      <input
+                        aria-label="Health-check path"
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        className="form-input mt-0 font-mono"
+                        disabled={isSavingHealthCheck}
+                        maxLength={1024}
+                        onChange={(event) =>
+                          setHealthCheckPath(event.target.value)
+                        }
+                        value={healthCheckPath}
+                      />
+                      <button
+                        className="button-secondary mt-3"
+                        disabled={
+                          isSavingHealthCheck ||
+                          healthCheckPath.trim() === project.healthCheckPath
+                        }
+                        onClick={() => void saveHealthCheckPath()}
+                        type="button"
+                      >
+                        {isSavingHealthCheck ? "Saving…" : "Save path"}
+                      </button>
                     </dd>
                   </div>
                 </dl>

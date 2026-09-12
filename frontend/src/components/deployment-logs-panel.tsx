@@ -77,6 +77,7 @@ const DEPLOYMENT_STATUSES = new Set<string>([
   "CLONING",
   "BUILDING",
   "STARTING",
+  "HEALTHCHECKING",
   "RUNNING",
   "FAILED",
   "STOPPED",

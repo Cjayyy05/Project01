@@ -9,6 +9,7 @@ import {
   type DeploymentDatabase,
   type DeploymentEvent,
   type DeploymentGitService,
+  type DeploymentHealthCheckService,
   type DeploymentRecord,
 } from '../src/services/deployment.service.js';
 import { AppError } from '../src/utils/app-error.js';
@@ -31,6 +32,7 @@ const project = {
   repositoryUrl: 'https://github.com/example/example-api',
   branch: 'main',
   containerPort: 8080,
+  healthCheckPath: '/health',
 };
 
 const preparedRepository = {
@@ -93,6 +95,9 @@ describe('DeploymentService', () => {
   >;
   let imageExists: ReturnType<
     typeof vi.fn<DeploymentBuildService['imageExists']>
+  >;
+  let waitUntilHealthy: ReturnType<
+    typeof vi.fn<DeploymentHealthCheckService['waitUntilHealthy']>
   >;
   let startContainer: ReturnType<
     typeof vi.fn<DeploymentContainerService['startContainer']>
@@ -177,6 +182,9 @@ describe('DeploymentService', () => {
     imageExists = vi
       .fn<DeploymentBuildService['imageExists']>()
       .mockResolvedValue(true);
+    waitUntilHealthy = vi
+      .fn<DeploymentHealthCheckService['waitUntilHealthy']>()
+      .mockResolvedValue(undefined);
     startContainer = vi
       .fn<DeploymentContainerService['startContainer']>()
       .mockResolvedValue(startedContainer);
@@ -227,6 +235,7 @@ describe('DeploymentService', () => {
       database,
       gitService,
       applicationDetector: { prepareBuild },
+      healthCheckService: { waitUntilHealthy },
       buildService,
       containerService,
       now: () => now,
@@ -364,6 +373,10 @@ describe('DeploymentService', () => {
       containerPort: project.containerPort,
       deploymentId,
     });
+    expect(waitUntilHealthy).toHaveBeenCalledWith({
+      hostPort: startedContainer.hostPort,
+      path: project.healthCheckPath,
+    });
     expect(cleanupRepository).toHaveBeenCalledWith(
       preparedRepository.repositoryPath,
     );
@@ -372,6 +385,7 @@ describe('DeploymentService', () => {
       DeploymentStatus.CLONING,
       DeploymentStatus.BUILDING,
       DeploymentStatus.STARTING,
+      DeploymentStatus.HEALTHCHECKING,
       DeploymentStatus.RUNNING,
     ]);
     expect(result).toMatchObject({
@@ -429,9 +443,14 @@ describe('DeploymentService', () => {
     const runningUpdateCallOrder =
       updateDeployment.mock.invocationCallOrder[runningUpdateIndex];
     const [stopCallOrder] = stopContainer.mock.invocationCallOrder;
+    const [healthCallOrder] = waitUntilHealthy.mock.invocationCallOrder;
     if (runningUpdateCallOrder === undefined || stopCallOrder === undefined) {
       throw new Error('Expected running persistence before old-container stop');
     }
+    if (healthCallOrder === undefined) {
+      throw new Error('Expected replacement health check');
+    }
+    expect(healthCallOrder).toBeLessThan(stopCallOrder);
     expect(runningUpdateCallOrder).toBeLessThan(stopCallOrder);
     expect(events).toContainEqual({
       type: 'status',
@@ -456,6 +475,27 @@ describe('DeploymentService', () => {
     expect(records.get(deploymentId)?.status).toBe(DeploymentStatus.RUNNING);
     expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.FAILED);
     expect(stopContainer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the previous deployment running when replacement health checking fails', async () => {
+    const records = configureRedeployRecords();
+    const stopContainer = vi.mocked(containerService.stopContainer);
+    waitUntilHealthy.mockRejectedValue(
+      new AppError(422, 'Application did not become healthy at /health'),
+    );
+
+    await expect(
+      createService().redeployDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: 'Application did not become healthy at /health',
+    });
+
+    expect(records.get(deploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.FAILED);
+    expect(stopContainer).not.toHaveBeenCalled();
+    expect(removeContainer).toHaveBeenCalledWith(containerId);
+    expect(removeImage).toHaveBeenCalledWith(builtImage.imageTag);
   });
 
   it('creates a new rollback deployment from an existing image before cutting over', async () => {
@@ -692,6 +732,83 @@ describe('DeploymentService', () => {
       preparedRepository.repositoryPath,
     );
     expect(removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('marks a new deployment failed and cleans its container after an unhealthy start', async () => {
+    waitUntilHealthy.mockRejectedValue(
+      new AppError(422, 'Application did not become healthy at /health'),
+    );
+
+    await expect(createService().deployProject(projectId)).rejects.toMatchObject({
+      statusCode: 422,
+      message: 'Application did not become healthy at /health',
+    });
+
+    expect(recordedStatuses()).toEqual([
+      DeploymentStatus.QUEUED,
+      DeploymentStatus.CLONING,
+      DeploymentStatus.BUILDING,
+      DeploymentStatus.STARTING,
+      DeploymentStatus.HEALTHCHECKING,
+      DeploymentStatus.FAILED,
+    ]);
+    expect(removeContainer).toHaveBeenCalledWith(containerId);
+    expect(removeImage).toHaveBeenCalledWith(imageTag);
+    expect(currentDeployment.status).toBe(DeploymentStatus.FAILED);
+  });
+
+  it('requires a successful health check before restart returns to running', async () => {
+    const stoppedDeployment: DeploymentRecord = {
+      ...currentDeployment,
+      status: DeploymentStatus.STOPPED,
+      containerId,
+      hostPort: 49_152,
+    };
+    findOwnedDeployment.mockResolvedValue({ ...stoppedDeployment, project });
+    const restartContainer = vi.mocked(containerService.restartContainer);
+
+    const result = await createService().restartDeployment(userId, deploymentId);
+
+    expect(restartContainer).toHaveBeenCalledWith(containerId, project.containerPort);
+    expect(waitUntilHealthy).toHaveBeenCalledWith({
+      hostPort: startedContainer.hostPort,
+      path: project.healthCheckPath,
+    });
+    const [healthCallOrder] = waitUntilHealthy.mock.invocationCallOrder;
+    const runningUpdateIndex = updateDeployment.mock.calls.findIndex(
+      ([options]) => options.data.status === DeploymentStatus.RUNNING,
+    );
+    const runningUpdateCallOrder =
+      updateDeployment.mock.invocationCallOrder[runningUpdateIndex];
+    if (healthCallOrder === undefined || runningUpdateCallOrder === undefined) {
+      throw new Error('Expected restart health check before running persistence');
+    }
+    expect(healthCallOrder).toBeLessThan(runningUpdateCallOrder);
+    expect(result.status).toBe(DeploymentStatus.RUNNING);
+  });
+
+  it('stops a restarted container that fails its health check', async () => {
+    const stoppedDeployment: DeploymentRecord = {
+      ...currentDeployment,
+      status: DeploymentStatus.STOPPED,
+      containerId,
+      hostPort: 49_152,
+    };
+    findOwnedDeployment.mockResolvedValue({ ...stoppedDeployment, project });
+    waitUntilHealthy.mockRejectedValue(
+      new AppError(422, 'Application did not become healthy at /health'),
+    );
+    const stopContainer = vi.mocked(containerService.stopContainer);
+
+    await expect(
+      createService().restartDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({ statusCode: 422 });
+
+    expect(stopContainer).toHaveBeenCalledWith(containerId);
+    expect(currentDeployment).toMatchObject({
+      status: DeploymentStatus.FAILED,
+      errorMessage: 'Application did not become healthy at /health',
+    });
   });
 
   it('removes all owned runtime resources after a post-start failure', async () => {

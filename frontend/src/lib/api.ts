@@ -14,6 +14,7 @@ export type Project = {
   repositoryUrl: string;
   branch: string;
   containerPort: number;
+  healthCheckPath: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -23,6 +24,7 @@ export type CreateProjectInput = {
   repositoryUrl: string;
   branch: string;
   containerPort: number;
+  healthCheckPath?: string;
 };
 
 export type DeploymentStatus =
@@ -30,6 +32,7 @@ export type DeploymentStatus =
   | "CLONING"
   | "BUILDING"
   | "STARTING"
+  | "HEALTHCHECKING"
   | "RUNNING"
   | "FAILED"
   | "STOPPED";
@@ -202,6 +205,22 @@ export const projectApi = {
     const response = await request<ProjectResponse>(
       `/projects/${encodeURIComponent(projectId)}`,
       { token, signal },
+    );
+    return response.project;
+  },
+
+  async updateHealthCheckPath(
+    token: string,
+    projectId: string,
+    healthCheckPath: string,
+  ): Promise<Project> {
+    const response = await request<ProjectResponse>(
+      `/projects/${encodeURIComponent(projectId)}`,
+      {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ healthCheckPath }),
+      },
     );
     return response.project;
   },

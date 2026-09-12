@@ -11,7 +11,7 @@ This repository currently contains the backend foundation, PostgreSQL persistenc
 The completed MVP should support:
 
 - User registration and login.
-- Deployment projects with a public GitHub repository URL, Git branch, and application container port.
+- Deployment projects with a public GitHub repository URL, Git branch, application container port, and application-relative health-check path.
 - Cloning public repositories and preparing an existing or safely generated Dockerfile.
 - Building a Docker image and starting a container.
 - Assigning an available host port.
@@ -28,8 +28,10 @@ The completed MVP should support:
 4. The backend uses a root Dockerfile when present. Otherwise it detects a supported npm-based Node.js application or a supported Flask, FastAPI, or Streamlit application and generates a Dockerfile only in the temporary clone.
 5. Docker builds an image while build state and logs are streamed to the user. Dependency installation and repository-provided npm or Python build steps run only inside Docker.
 6. DeployFlow selects an available host port and starts the application container.
-7. The backend records the outcome and exposes state, logs, and basic runtime metrics.
-8. The user can stop, restart, or redeploy the application; each deployment is retained in history.
+7. The deployment enters `HEALTHCHECKING`. DeployFlow repeatedly requests the project's configured path through the new container's localhost host port, using bounded retries and per-request timeouts.
+8. Only an HTTP response from 200 through 399 marks the deployment `RUNNING`. An unhealthy application fails and its new container is cleaned up.
+9. The backend records the outcome and exposes state, logs, and basic runtime metrics.
+10. The user can stop, restart, or redeploy the application; each deployment is retained in history.
 
 ## Supported repository assumptions
 
@@ -38,6 +40,7 @@ The completed MVP should support:
 - A valid root Dockerfile exists, or the repository matches one of the supported automatic detection modes below.
 - An existing or generated Dockerfile produces a runnable application image.
 - The user supplies the correct branch and internal application port.
+- The configured health-check path returns a successful HTTP response when the application is ready. The default path is `/`.
 - A single Docker host has enough resources to build and run the project.
 
 ## Automatic application detection
@@ -56,6 +59,14 @@ Supported Python layouts are intentionally narrow:
 - Streamlit: root `app.py` and a Streamlit dependency.
 
 Generated Node.js images use Node 22 on Debian slim, set `HOST=0.0.0.0` and `PORT` to the configured container port, and start with `npm start`. The application must honor those conventional environment variables. Generated Python images use Python 3.13 slim and install from `requirements.txt` or the repository's standard project metadata. Generated launch commands bind supported Python applications to `0.0.0.0` on the project's configured container port. Generated Dockerfiles exist only inside DeployFlow's temporary clone and are deleted with that directory after the build workflow.
+
+## Application health checks
+
+Each project has an application-relative health-check path, defaulting to `/`. Paths such as `/health` and `/api/health` are accepted. Absolute URLs, protocol-relative paths, query strings, fragments, backslashes, control characters, and malformed encodings are rejected.
+
+Health checks always target `127.0.0.1` and the host port dynamically assigned to the newly started container. DeployFlow does not follow redirects or accept a configurable health-check host, preventing the feature from becoming an arbitrary server-side request mechanism. Checks use a two-second request timeout and retry up to 20 times with a one-second delay.
+
+The successful lifecycle is `QUEUED → CLONING → BUILDING → STARTING → HEALTHCHECKING → RUNNING`. Restart also passes through `STARTING → HEALTHCHECKING → RUNNING`. During redeploy and rollback, the existing running deployment remains available until its replacement passes health checking. A failed check marks only the replacement `FAILED`, cleans its container and incomplete image where appropriate, and leaves the working deployment running.
 
 ## Security limitations
 

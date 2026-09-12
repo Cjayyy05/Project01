@@ -11,6 +11,7 @@ const databaseMocks = vi.hoisted(() => ({
 }));
 
 const infrastructureMocks = vi.hoisted(() => ({
+  waitUntilHealthy: vi.fn<(args: unknown) => Promise<void>>(),
   prepareBuild: vi.fn<(args: unknown) => Promise<unknown>>(),
   prepareRepository: vi.fn<(args: unknown) => Promise<unknown>>(),
   prepareRepositoryAtCommit: vi.fn<(args: unknown) => Promise<unknown>>(),
@@ -64,6 +65,12 @@ vi.mock('../src/services/application-detector.service.js', () => ({
   },
 }));
 
+vi.mock('../src/services/application-health-check.service.js', () => ({
+  applicationHealthCheckService: {
+    waitUntilHealthy: infrastructureMocks.waitUntilHealthy,
+  },
+}));
+
 vi.mock('../src/services/docker-build.service.js', () => ({
   dockerBuildService: {
     buildImage: infrastructureMocks.buildImage,
@@ -104,6 +111,7 @@ const project = {
   repositoryUrl: 'https://github.com/example/example-api',
   branch: 'main',
   containerPort: 8080,
+  healthCheckPath: '/health',
 };
 
 const createDeploymentRecord = (
@@ -197,6 +205,7 @@ beforeEach(() => {
     generatedDockerfile: false,
     framework: 'dockerfile',
   });
+  infrastructureMocks.waitUntilHealthy.mockResolvedValue(undefined);
   infrastructureMocks.prepareRepositoryAtCommit.mockResolvedValue({
     repositoryPath: 'C:\\temp\\deployflow-route-test',
     commitHash,

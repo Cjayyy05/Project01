@@ -30,6 +30,14 @@ const isValidGitHubRepository = (value: string): boolean => {
   }
 };
 
+const isValidHealthCheckPath = (value: string): boolean =>
+  value.length > 0 &&
+  value.length <= 1024 &&
+  value.startsWith("/") &&
+  !value.startsWith("//") &&
+  /^[A-Za-z0-9\-._~!$&'()*+,;=:@/%]+$/.test(value) &&
+  !/[\u0000-\u001f\u007f\\?#]/.test(value);
+
 export function CreateProjectForm({
   token,
   onCancel,
@@ -39,6 +47,7 @@ export function CreateProjectForm({
   const [repositoryUrl, setRepositoryUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const [containerPort, setContainerPort] = useState("");
+  const [healthCheckPath, setHealthCheckPath] = useState("/");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -48,6 +57,7 @@ export function CreateProjectForm({
     const normalizedRepositoryUrl = repositoryUrl.trim();
     const normalizedBranch = branch.trim();
     const parsedPort = Number(containerPort);
+    const normalizedHealthCheckPath = healthCheckPath.trim();
 
     if (normalizedName.length === 0 || normalizedName.length > 100) {
       setError("Project name must be between 1 and 100 characters.");
@@ -65,6 +75,10 @@ export function CreateProjectForm({
       setError("Container port must be an integer from 1 to 65535.");
       return;
     }
+    if (!isValidHealthCheckPath(normalizedHealthCheckPath)) {
+      setError("Health-check path must start with /, such as /health.");
+      return;
+    }
 
     setError(null);
     setIsSubmitting(true);
@@ -75,6 +89,7 @@ export function CreateProjectForm({
         repositoryUrl: normalizedRepositoryUrl,
         branch: normalizedBranch,
         containerPort: parsedPort,
+        healthCheckPath: normalizedHealthCheckPath,
       });
       await onCreated();
     } catch (requestError: unknown) {
@@ -195,6 +210,29 @@ export function CreateProjectForm({
             >
               Container port is the port your application listens on inside Docker,
               such as 3000, 5000, or 8080.
+            </span>
+          </label>
+
+          <label className="block text-sm font-medium text-slate-800">
+            Health-check path
+            <input
+              aria-describedby="health-check-path-help"
+              autoCapitalize="none"
+              autoComplete="off"
+              className="form-input font-mono"
+              disabled={isSubmitting}
+              maxLength={1024}
+              onChange={(event) => setHealthCheckPath(event.target.value)}
+              placeholder="/"
+              required
+              value={healthCheckPath}
+            />
+            <span
+              className="mt-2 block text-xs leading-5 text-slate-500"
+              id="health-check-path-help"
+            >
+              DeployFlow waits for a successful response from this local path before
+              marking a deployment running.
             </span>
           </label>
         </div>

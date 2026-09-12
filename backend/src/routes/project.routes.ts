@@ -5,6 +5,7 @@ import {
   getById,
   list,
   remove,
+  updateHealthCheck,
 } from '../controllers/project.controller.js';
 import {
   deployProject,
@@ -21,5 +22,6 @@ projectRouter.get('/', list);
 projectRouter.post('/:id/deploy', deployProject);
 projectRouter.get('/:id/deployments', listProjectDeployments);
 projectRouter.get('/:id/webhook', getGitHubWebhookConfiguration);
+projectRouter.patch('/:id', updateHealthCheck);
 projectRouter.get('/:id', getById);
 projectRouter.delete('/:id', remove);

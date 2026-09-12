@@ -1,0 +1,6 @@
+-- AlterEnum
+ALTER TYPE "DeploymentStatus" ADD VALUE 'HEALTHCHECKING' BEFORE 'RUNNING';
+
+-- AlterTable
+ALTER TABLE "Project"
+ADD COLUMN "healthCheckPath" VARCHAR(1024) NOT NULL DEFAULT '/';

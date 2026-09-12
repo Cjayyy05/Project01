@@ -6,6 +6,7 @@ type CreateProjectData = {
   repositoryUrl: string;
   branch: string;
   containerPort: number;
+  healthCheckPath: string;
 };
 
 const projectSelect = {
@@ -15,6 +16,7 @@ const projectSelect = {
   repositoryUrl: true,
   branch: true,
   containerPort: true,
+  healthCheckPath: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -48,6 +50,23 @@ export const getProject = async (userId: string, projectId: string) => {
   return project;
 };
 
+export const updateProjectHealthCheck = async (
+  userId: string,
+  projectId: string,
+  healthCheckPath: string,
+) => {
+  const result = await database.project.updateMany({
+    where: { id: projectId, userId },
+    data: { healthCheckPath },
+  });
+
+  if (result.count === 0) {
+    throw new AppError(404, 'Project not found');
+  }
+
+  return getProject(userId, projectId);
+};
+
 export const deleteProject = async (
   userId: string,
   projectId: string,
@@ -60,4 +79,3 @@ export const deleteProject = async (
     throw new AppError(404, 'Project not found');
   }
 };
-

@@ -14,6 +14,7 @@ enum DeploymentStatus {
   CLONING
   BUILDING
   STARTING
+  HEALTHCHECKING
   RUNNING
   FAILED
   STOPPED
@@ -41,6 +42,7 @@ model Project {
   repositoryUrl     String
   branch            String                  @db.VarChar(255)
   containerPort     Int
+  healthCheckPath   String                  @default("/") @db.VarChar(1024)
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
