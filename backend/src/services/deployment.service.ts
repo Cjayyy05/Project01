@@ -5,6 +5,10 @@ import {
 } from '../generated/prisma/enums.js';
 import { AppError } from '../utils/app-error.js';
 import {
+  applicationDetector,
+  type DetectedApplicationType,
+} from './application-detector.service.js';
+import {
   dockerBuildService,
   type DockerBuildOutput,
   type DockerBuildResult,
@@ -35,6 +39,7 @@ export type DeploymentRecord = {
   id: string;
   projectId: string;
   rollbackSourceDeploymentId: string | null;
+  applicationType: DetectedApplicationType | null;
   commitHash: string | null;
   status: DeploymentStatusValue;
   containerId: string | null;
@@ -85,6 +90,7 @@ export type DeploymentEventCallback = (event: DeploymentEvent) => void;
 
 export type DeploymentUpdateData = {
   status?: DeploymentStatusValue;
+  applicationType?: DetectedApplicationType;
   commitHash?: string;
   containerId?: string;
   imageId?: string;
@@ -153,6 +159,11 @@ export type DeploymentGitService = Pick<
   'prepareRepository' | 'prepareRepositoryAtCommit' | 'cleanup'
 >;
 
+export type DeploymentApplicationDetector = Pick<
+  typeof applicationDetector,
+  'prepareBuild'
+>;
+
 export type DeploymentBuildService = Pick<
   typeof dockerBuildService,
   'buildImage' | 'imageExists' | 'removeImage'
@@ -173,6 +184,7 @@ export type DeploymentContainerService = Pick<
 export type DeploymentServiceDependencies = {
   database?: DeploymentDatabase;
   gitService?: DeploymentGitService;
+  applicationDetector?: DeploymentApplicationDetector;
   buildService?: DeploymentBuildService;
   containerService?: DeploymentContainerService;
   now?: () => Date;
@@ -223,6 +235,7 @@ const getSafeFailureMessage = (
 export class DeploymentService {
   readonly #database: DeploymentDatabase;
   readonly #gitService: DeploymentGitService;
+  readonly #applicationDetector: DeploymentApplicationDetector;
   readonly #buildService: DeploymentBuildService;
   readonly #containerService: DeploymentContainerService;
   readonly #now: () => Date;
@@ -230,6 +243,8 @@ export class DeploymentService {
   public constructor(dependencies: DeploymentServiceDependencies = {}) {
     this.#database = dependencies.database ?? database;
     this.#gitService = dependencies.gitService ?? gitRepositoryService;
+    this.#applicationDetector =
+      dependencies.applicationDetector ?? applicationDetector;
     this.#buildService = dependencies.buildService ?? dockerBuildService;
     this.#containerService =
       dependencies.containerService ?? containerService;
@@ -500,9 +515,20 @@ export class DeploymentService {
         repositoryUrl: project.repositoryUrl,
         branch: project.branch,
       });
+      const detectedApplication = await this.#applicationDetector.prepareBuild({
+        repositoryDirectory: repository.repositoryPath,
+        containerPort: project.containerPort,
+      });
       deployment = await this.#updateDeployment(deployment.id, {
         commitHash: repository.commitHash,
+        applicationType: detectedApplication.applicationType,
       });
+      this.#emitLog(
+        onEvent,
+        deployment.id,
+        'deployment',
+        `Detected ${detectedApplication.applicationType} application`,
+      );
 
       stage = DeploymentStatus.BUILDING;
       deployment = await this.#changeStatus(deployment.id, stage, onEvent);
@@ -644,6 +670,9 @@ export class DeploymentService {
         if (sourceDeployment.imageTag !== null) {
           reusedImageData.imageTag = sourceDeployment.imageTag;
         }
+        if (sourceDeployment.applicationType !== null) {
+          reusedImageData.applicationType = sourceDeployment.applicationType;
+        }
         deployment = await this.#updateDeployment(
           deployment.id,
           reusedImageData,
@@ -667,6 +696,13 @@ export class DeploymentService {
           repositoryUrl: sourceDeployment.project.repositoryUrl,
           branch: sourceDeployment.project.branch,
           commitHash,
+        });
+        const detectedApplication = await this.#applicationDetector.prepareBuild({
+          repositoryDirectory: repository.repositoryPath,
+          containerPort: sourceDeployment.project.containerPort,
+        });
+        deployment = await this.#updateDeployment(deployment.id, {
+          applicationType: detectedApplication.applicationType,
         });
 
         stage = DeploymentStatus.BUILDING;
@@ -837,6 +873,7 @@ export class DeploymentService {
       id: deployment.id,
       projectId: deployment.projectId,
       rollbackSourceDeploymentId: deployment.rollbackSourceDeploymentId,
+      applicationType: deployment.applicationType,
       commitHash: deployment.commitHash,
       status: deployment.status,
       containerId: deployment.containerId,

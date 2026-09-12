@@ -11,6 +11,7 @@ const databaseMocks = vi.hoisted(() => ({
 }));
 
 const infrastructureMocks = vi.hoisted(() => ({
+  prepareBuild: vi.fn<(args: unknown) => Promise<unknown>>(),
   prepareRepository: vi.fn<(args: unknown) => Promise<unknown>>(),
   prepareRepositoryAtCommit: vi.fn<(args: unknown) => Promise<unknown>>(),
   cleanupRepository: vi.fn<(path: string) => Promise<void>>(),
@@ -54,6 +55,12 @@ vi.mock('../src/services/git-repository.service.js', () => ({
     prepareRepository: infrastructureMocks.prepareRepository,
     prepareRepositoryAtCommit: infrastructureMocks.prepareRepositoryAtCommit,
     cleanup: infrastructureMocks.cleanupRepository,
+  },
+}));
+
+vi.mock('../src/services/application-detector.service.js', () => ({
+  applicationDetector: {
+    prepareBuild: infrastructureMocks.prepareBuild,
   },
 }));
 
@@ -106,6 +113,7 @@ const createDeploymentRecord = (
   id,
   projectId,
   rollbackSourceDeploymentId: null,
+  applicationType: null,
   commitHash: status === DeploymentStatus.QUEUED ? null : commitHash,
   status,
   containerId: status === DeploymentStatus.QUEUED ? null : containerId,
@@ -183,6 +191,11 @@ beforeEach(() => {
       repositoryUrl: project.repositoryUrl,
       branch: project.branch,
     },
+  });
+  infrastructureMocks.prepareBuild.mockResolvedValue({
+    applicationType: 'DOCKERFILE',
+    generatedDockerfile: false,
+    framework: 'dockerfile',
   });
   infrastructureMocks.prepareRepositoryAtCommit.mockResolvedValue({
     repositoryPath: 'C:\\temp\\deployflow-route-test',

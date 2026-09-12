@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -89,12 +89,6 @@ const parseBranch = (value: unknown): string => {
   return branch;
 };
 
-const isMissingFileError = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  'code' in error &&
-  error.code === 'ENOENT';
-
 export class GitRepositoryService {
   readonly #runGit: GitCommandRunner;
   readonly #managedDirectories = new Set<string>();
@@ -151,24 +145,6 @@ export class GitRepositoryService {
 
       if (!COMMIT_HASH_PATTERN.test(commitHash)) {
         throw new AppError(422, 'Repository returned an invalid commit hash');
-      }
-
-      try {
-        const dockerfile = await lstat(join(repositoryPath, 'Dockerfile'));
-
-        if (!dockerfile.isFile()) {
-          throw new AppError(422, 'Dockerfile not found at repository root');
-        }
-      } catch (error: unknown) {
-        if (error instanceof AppError) {
-          throw error;
-        }
-
-        if (isMissingFileError(error)) {
-          throw new AppError(422, 'Dockerfile not found at repository root');
-        }
-
-        throw new AppError(500, 'Unable to inspect repository Dockerfile');
       }
 
       return {
@@ -269,8 +245,6 @@ export class GitRepositoryService {
         throw new AppError(422, 'Repository returned an unexpected commit');
       }
 
-      await this.#verifyRootDockerfile(repositoryPath);
-
       return {
         repositoryPath,
         commitHash,
@@ -306,22 +280,6 @@ export class GitRepositoryService {
       await this.#removeManagedDirectory(repositoryPath);
     } catch {
       throw new AppError(500, 'Unable to clean up temporary repository');
-    }
-  }
-
-  async #verifyRootDockerfile(repositoryPath: string): Promise<void> {
-    try {
-      const dockerfile = await lstat(join(repositoryPath, 'Dockerfile'));
-
-      if (!dockerfile.isFile()) {
-        throw new AppError(422, 'Dockerfile not found at repository root');
-      }
-    } catch (error: unknown) {
-      if (error instanceof AppError) throw error;
-      if (isMissingFileError(error)) {
-        throw new AppError(422, 'Dockerfile not found at repository root');
-      }
-      throw new AppError(500, 'Unable to inspect repository Dockerfile');
     }
   }
 

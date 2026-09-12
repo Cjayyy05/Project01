@@ -7,6 +7,7 @@ import {
   GitRepositoryService,
   type GitCommandRunner,
 } from '../src/services/git-repository.service.js';
+import { ApplicationDetector } from '../src/services/application-detector.service.js';
 
 const repositoryUrl = 'https://github.com/example/example-api';
 const commitHash = '0123456789abcdef0123456789abcdef01234567';
@@ -95,26 +96,39 @@ describe('GitRepositoryService', () => {
     expect(await pathExists(temporaryPath ?? '')).toBe(false);
   });
 
-  it('rejects a missing root Dockerfile and removes the repository', async () => {
+  it('keeps a Dockerfile-free clone available for application detection and cleanup', async () => {
     let temporaryPath: string | undefined;
-    runGit.mockImplementation((args) => {
+    runGit.mockImplementation(async (args) => {
       if (args[0] === 'clone') {
         temporaryPath = args.at(-1);
-        return Promise.resolve('');
+        if (temporaryPath === undefined) throw new Error('Missing destination');
+        await writeFile(
+          join(temporaryPath, 'package.json'),
+          JSON.stringify({ scripts: { start: 'node server.js' } }),
+        );
+        return '';
       }
 
-      return Promise.resolve(`${commitHash}\n`);
+      return `${commitHash}\n`;
     });
     const service = new GitRepositoryService({ runGit });
 
-    await expect(
-      service.prepareRepository({ repositoryUrl, branch: 'main' }),
-    ).rejects.toMatchObject({
-      statusCode: 422,
-      message: 'Dockerfile not found at repository root',
+    const prepared = await service.prepareRepository({
+      repositoryUrl,
+      branch: 'main',
     });
-    expect(temporaryPath).toBeDefined();
-    expect(await pathExists(temporaryPath ?? '')).toBe(false);
+    const detected = await new ApplicationDetector().prepareBuild({
+      repositoryDirectory: prepared.repositoryPath,
+      containerPort: 8080,
+    });
+
+    expect(detected.applicationType).toBe('NODE');
+    expect(await pathExists(join(prepared.repositoryPath, 'Dockerfile'))).toBe(
+      true,
+    );
+
+    await service.cleanup(prepared.repositoryPath);
+    expect(await pathExists(prepared.repositoryPath)).toBe(false);
   });
 
   it('validates a repository and provides explicit cleanup', async () => {

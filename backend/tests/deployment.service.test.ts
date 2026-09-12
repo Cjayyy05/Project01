@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeploymentStatus } from '../src/generated/prisma/enums.js';
 import {
   DeploymentService,
+  type DeploymentApplicationDetector,
   type DeploymentBuildService,
   type DeploymentContainerService,
   type DeploymentDatabase,
@@ -75,6 +76,9 @@ describe('DeploymentService', () => {
   let prepareRepository: ReturnType<
     typeof vi.fn<DeploymentGitService['prepareRepository']>
   >;
+  let prepareBuild: ReturnType<
+    typeof vi.fn<DeploymentApplicationDetector['prepareBuild']>
+  >;
   let prepareRepositoryAtCommit: ReturnType<
     typeof vi.fn<DeploymentGitService['prepareRepositoryAtCommit']>
   >;
@@ -106,6 +110,7 @@ describe('DeploymentService', () => {
       id: deploymentId,
       projectId,
       rollbackSourceDeploymentId: null,
+      applicationType: null,
       commitHash: null,
       status: DeploymentStatus.QUEUED,
       containerId: null,
@@ -147,6 +152,13 @@ describe('DeploymentService', () => {
     prepareRepository = vi
       .fn<DeploymentGitService['prepareRepository']>()
       .mockResolvedValue(preparedRepository);
+    prepareBuild = vi
+      .fn<DeploymentApplicationDetector['prepareBuild']>()
+      .mockResolvedValue({
+        applicationType: 'DOCKERFILE',
+        generatedDockerfile: false,
+        framework: 'dockerfile',
+      });
     prepareRepositoryAtCommit = vi
       .fn<DeploymentGitService['prepareRepositoryAtCommit']>()
       .mockResolvedValue(preparedRepository);
@@ -214,6 +226,7 @@ describe('DeploymentService', () => {
     new DeploymentService({
       database,
       gitService,
+      applicationDetector: { prepareBuild },
       buildService,
       containerService,
       now: () => now,
@@ -264,6 +277,7 @@ describe('DeploymentService', () => {
     const sourceDeployment: DeploymentRecord = {
       ...currentDeployment,
       status: DeploymentStatus.STOPPED,
+      applicationType: 'DOCKERFILE',
       commitHash,
       containerId: 'e'.repeat(64),
       imageId,
@@ -333,6 +347,10 @@ describe('DeploymentService', () => {
       repositoryUrl: project.repositoryUrl,
       branch: project.branch,
     });
+    expect(prepareBuild).toHaveBeenCalledWith({
+      repositoryDirectory: preparedRepository.repositoryPath,
+      containerPort: project.containerPort,
+    });
     expect(buildImage).toHaveBeenCalledWith(
       {
         repositoryDirectory: preparedRepository.repositoryPath,
@@ -358,6 +376,7 @@ describe('DeploymentService', () => {
     ]);
     expect(result).toMatchObject({
       commitHash,
+      applicationType: 'DOCKERFILE',
       imageId,
       imageTag,
       containerId,
@@ -459,6 +478,7 @@ describe('DeploymentService', () => {
     });
     expect(imageExists).toHaveBeenCalledWith(imageId);
     expect(prepareRepositoryAtCommit).not.toHaveBeenCalled();
+    expect(prepareBuild).not.toHaveBeenCalled();
     expect(buildImage).not.toHaveBeenCalled();
     expect(startContainer).toHaveBeenCalledWith({
       imageIdentifier: imageId,
@@ -470,6 +490,7 @@ describe('DeploymentService', () => {
       rollbackSourceDeploymentId: deploymentId,
       commitHash,
       imageId,
+      applicationType: 'DOCKERFILE',
       status: DeploymentStatus.RUNNING,
     });
     expect(records.get(deploymentId)).toEqual(sourceDeployment);
@@ -509,6 +530,10 @@ describe('DeploymentService', () => {
       commitHash,
     });
     expect(prepareRepository).not.toHaveBeenCalled();
+    expect(prepareBuild).toHaveBeenCalledWith({
+      repositoryDirectory: preparedRepository.repositoryPath,
+      containerPort: project.containerPort,
+    });
     expect(buildImage).toHaveBeenCalledWith(
       {
         repositoryDirectory: preparedRepository.repositoryPath,

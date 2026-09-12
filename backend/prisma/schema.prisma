@@ -19,6 +19,12 @@ enum DeploymentStatus {
   STOPPED
 }
 
+enum ApplicationType {
+  DOCKERFILE
+  NODE
+  PYTHON
+}
+
 model User {
   id           String    @id @default(uuid()) @db.Uuid
   email        String    @unique @db.VarChar(320)
@@ -58,6 +64,7 @@ model Deployment {
   id                         String           @id @default(uuid()) @db.Uuid
   projectId                  String           @db.Uuid
   rollbackSourceDeploymentId String?          @db.Uuid
+  applicationType            ApplicationType?
   commitHash                 String?          @db.VarChar(64)
   status                     DeploymentStatus @default(QUEUED)
   containerId                String?

@@ -23,6 +23,7 @@ const deployment: DeploymentRecord = {
   id: deploymentId,
   projectId: 'a382fb3d-dce4-4470-8e41-89a181466ce8',
   rollbackSourceDeploymentId: null,
+  applicationType: 'DOCKERFILE',
   commitHash: 'a'.repeat(40),
   status: DeploymentStatus.RUNNING,
   containerId: 'b'.repeat(64),

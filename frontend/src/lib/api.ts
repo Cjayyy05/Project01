@@ -34,10 +34,13 @@ export type DeploymentStatus =
   | "FAILED"
   | "STOPPED";
 
+export type ApplicationType = "DOCKERFILE" | "NODE" | "PYTHON";
+
 export type Deployment = {
   id: string;
   projectId: string;
   rollbackSourceDeploymentId: string | null;
+  applicationType: ApplicationType | null;
   commitHash: string | null;
   status: DeploymentStatus;
   containerId: string | null;

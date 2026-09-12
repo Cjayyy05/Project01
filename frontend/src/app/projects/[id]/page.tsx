@@ -40,6 +40,15 @@ const ACTION_PENDING_LABELS: Record<DeploymentAction, string> = {
 
 const NEW_DEPLOYMENT_POLL_INTERVAL_MS = 150;
 
+const APPLICATION_TYPE_LABELS: Record<
+  NonNullable<Deployment["applicationType"]>,
+  string
+> = {
+  DOCKERFILE: "Dockerfile",
+  NODE: "Node.js",
+  PYTHON: "Python",
+};
+
 function StatusBadge({ status }: { status: Deployment["status"] }) {
   return (
     <span
@@ -457,6 +466,18 @@ export default function ProjectDetailsPage() {
                       </div>
                       <div>
                         <dt className="text-xs font-medium tracking-wide text-slate-500 uppercase">
+                          Deployment type
+                        </dt>
+                        <dd className="mt-1.5 text-sm text-slate-800">
+                          {latestDeployment.applicationType === null
+                            ? "—"
+                            : APPLICATION_TYPE_LABELS[
+                                latestDeployment.applicationType
+                              ]}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium tracking-wide text-slate-500 uppercase">
                           Created
                         </dt>
                         <dd className="mt-1.5 text-sm text-slate-800">
@@ -570,6 +591,7 @@ export default function ProjectDetailsPage() {
                         <th className="px-6 py-3 font-semibold" scope="col">Deployment ID</th>
                         <th className="px-4 py-3 font-semibold" scope="col">Status</th>
                         <th className="px-4 py-3 font-semibold" scope="col">Commit hash</th>
+                        <th className="px-4 py-3 font-semibold" scope="col">Type</th>
                         <th className="px-4 py-3 font-semibold" scope="col">Created</th>
                         <th className="px-4 py-3 font-semibold" scope="col">Started</th>
                         <th className="px-6 py-3 font-semibold" scope="col">Finished</th>
@@ -609,6 +631,13 @@ export default function ProjectDetailsPage() {
                           </td>
                           <td className="max-w-52 truncate px-4 py-4 font-mono text-xs" title={deployment.commitHash ?? undefined}>
                             {deployment.commitHash ?? "—"}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-4">
+                            {deployment.applicationType === null
+                              ? "—"
+                              : APPLICATION_TYPE_LABELS[
+                                  deployment.applicationType
+                                ]}
                           </td>
                           <td className="whitespace-nowrap px-4 py-4">
                             {formatDateTime(deployment.createdAt)}
