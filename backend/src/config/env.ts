@@ -48,10 +48,58 @@ const parseJwtSecret = (value: string | undefined): string => {
   return secret;
 };
 
+const parseWebhookSecretKey = (
+  value: string | undefined,
+): string | undefined => {
+  if (value === undefined || value.trim() === '') return undefined;
+  const secret = value.trim();
+
+  if (secret.length < 32) {
+    throw new Error(
+      'GITHUB_WEBHOOK_SECRET_KEY must contain at least 32 characters',
+    );
+  }
+
+  return secret;
+};
+
+const parsePublicBaseUrl = (
+  value: string | undefined,
+  port: number,
+): string => {
+  const candidate = value?.trim() ?? `http://localhost:${String(port)}`;
+  let url: URL;
+
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error('PUBLIC_BASE_URL must be a valid HTTP or HTTPS origin');
+  }
+
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.pathname !== '/' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error('PUBLIC_BASE_URL must be a valid HTTP or HTTPS origin');
+  }
+
+  return url.origin;
+};
+
+const port = parsePort(process.env.PORT);
+
 export const env = Object.freeze({
   databaseUrl: requireValue('DATABASE_URL', process.env.DATABASE_URL),
+  githubWebhookSecretKey: parseWebhookSecretKey(
+    process.env.GITHUB_WEBHOOK_SECRET_KEY,
+  ),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1h',
   jwtSecret: parseJwtSecret(process.env.JWT_SECRET),
   nodeEnv: parseNodeEnv(process.env.NODE_ENV),
-  port: parsePort(process.env.PORT),
+  port,
+  publicBaseUrl: parsePublicBaseUrl(process.env.PUBLIC_BASE_URL, port),
 });

@@ -29,18 +29,29 @@ model User {
 }
 
 model Project {
-  id            String       @id @default(uuid()) @db.Uuid
-  userId        String       @db.Uuid
-  name          String       @db.VarChar(100)
-  repositoryUrl String
-  branch        String       @db.VarChar(255)
-  containerPort Int
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deployments   Deployment[]
+  id                String                  @id @default(uuid()) @db.Uuid
+  userId            String                  @db.Uuid
+  name              String                  @db.VarChar(100)
+  repositoryUrl     String
+  branch            String                  @db.VarChar(255)
+  containerPort     Int
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deployments       Deployment[]
+  webhookDeliveries GitHubWebhookDelivery[]
 
   @@index([userId])
+}
+
+model GitHubWebhookDelivery {
+  deliveryId String   @id @db.VarChar(255)
+  projectId  String   @db.Uuid
+  createdAt  DateTime @default(now())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([createdAt])
 }
 
 model Deployment {
@@ -62,4 +73,3 @@ model Deployment {
   @@index([projectId])
   @@index([status])
 }
-

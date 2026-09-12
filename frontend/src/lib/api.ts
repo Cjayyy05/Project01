@@ -69,6 +69,13 @@ export type DeploymentMetrics = {
   };
 };
 
+export type GitHubWebhookConfiguration = {
+  url: string;
+  secret: string;
+  contentType: "application/json";
+  event: "push";
+};
+
 type UserResponse = { user: AuthUser };
 type LoginResponse = UserResponse & { token: string };
 type ProjectResponse = { project: Project };
@@ -76,6 +83,7 @@ type ProjectsResponse = { projects: Project[] };
 type DeploymentResponse = { deployment: Deployment };
 type DeploymentsResponse = { deployments: Deployment[] };
 type DeploymentMetricsResponse = { metrics: DeploymentMetrics };
+type GitHubWebhookResponse = { webhook: GitHubWebhookConfiguration };
 type ErrorResponse = { error?: { message?: unknown } };
 
 export class ApiError extends Error {
@@ -204,6 +212,18 @@ export const projectApi = {
       { token, signal },
     );
     return response.deployments;
+  },
+
+  async getWebhookConfiguration(
+    token: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<GitHubWebhookConfiguration> {
+    const response = await request<GitHubWebhookResponse>(
+      `/projects/${encodeURIComponent(projectId)}/webhook`,
+      { token, signal },
+    );
+    return response.webhook;
   },
 };
 

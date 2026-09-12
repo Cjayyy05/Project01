@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { DeploymentLogsPanel } from "@/components/deployment-logs-panel";
 import { DeploymentMetricsPanel } from "@/components/deployment-metrics-panel";
+import { GitHubWebhookPanel } from "@/components/github-webhook-panel";
 import { useAuth } from "@/context/auth-context";
 import {
   ApiError,
@@ -465,6 +466,11 @@ export default function ProjectDetailsPage() {
 
             {token !== null ? (
               <>
+                <GitHubWebhookPanel
+                  onUnauthorized={logout}
+                  projectId={project.id}
+                  token={token}
+                />
                 <DeploymentMetricsPanel
                   deployment={selectedDeployment}
                   key={`${selectedDeployment?.id ?? "no-deployment"}:${selectedDeployment?.status ?? "none"}`}

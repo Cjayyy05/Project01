@@ -369,13 +369,21 @@ export class DeploymentService {
       userId,
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
-    const newDeployment = await this.deployProject(
+    return this.deployProjectReplacingRunning(
       previousDeployment.projectId,
       onEvent,
     );
+  }
+
+  public async deployProjectReplacingRunning(
+    rawProjectId: unknown,
+    onEvent?: DeploymentEventCallback,
+  ): Promise<DeploymentRecord> {
+    const projectId = parseIdentifier(rawProjectId, 'Project ID');
+    const newDeployment = await this.deployProject(projectId, onEvent);
 
     await this.#stopPreviousRunningDeployments(
-      previousDeployment.projectId,
+      projectId,
       newDeployment.id,
       onEvent,
     );
