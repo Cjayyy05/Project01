@@ -38,6 +38,9 @@ type DockerImage = {
   remove: (options: { force: boolean }) => Promise<unknown>;
 };
 
+const isDockerNotFoundError = (error: unknown): boolean =>
+  isRecord(error) && error.statusCode === 404;
+
 type DockerBuildOptions = {
   dockerfile: string;
   t: string;
@@ -301,6 +304,26 @@ export class DockerBuildService {
         .remove({ force: true });
     } catch {
       throw new AppError(422, 'Unable to remove Docker image');
+    }
+  }
+
+  public async imageExists(imageIdentifier: string): Promise<boolean> {
+    const normalizedIdentifier = imageIdentifier.trim();
+
+    if (
+      normalizedIdentifier.length === 0 ||
+      normalizedIdentifier.length > MAX_IMAGE_IDENTIFIER_LENGTH ||
+      /\s/.test(normalizedIdentifier)
+    ) {
+      throw new AppError(400, 'Image identifier is invalid');
+    }
+
+    try {
+      await this.#docker.getImage(normalizedIdentifier).inspect();
+      return true;
+    } catch (error: unknown) {
+      if (isDockerNotFoundError(error)) return false;
+      throw new AppError(503, 'Unable to inspect Docker image');
     }
   }
 

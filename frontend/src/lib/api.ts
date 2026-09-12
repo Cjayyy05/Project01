@@ -37,6 +37,7 @@ export type DeploymentStatus =
 export type Deployment = {
   id: string;
   projectId: string;
+  rollbackSourceDeploymentId: string | null;
   commitHash: string | null;
   status: DeploymentStatus;
   containerId: string | null;
@@ -264,6 +265,13 @@ export const deploymentApi = {
     return deploymentAction(
       token,
       `/deployments/${encodeURIComponent(deploymentId)}/redeploy`,
+    );
+  },
+
+  async rollback(token: string, deploymentId: string): Promise<Deployment> {
+    return deploymentAction(
+      token,
+      `/deployments/${encodeURIComponent(deploymentId)}/rollback`,
     );
   },
 

@@ -73,7 +73,9 @@ export default function ProjectDetailsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<DeploymentAction | null>(null);
+  const [pendingRollbackId, setPendingRollbackId] = useState<string | null>(null);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(
     null,
   );
@@ -169,7 +171,8 @@ export default function ProjectDetailsPage() {
     deployments.find((deployment) => deployment.id === selectedDeploymentId) ?? null;
   const deploymentBusy =
     latestDeployment !== null && isDeploymentInProgress(latestDeployment.status);
-  const actionsBusy = pendingAction !== null || deploymentBusy;
+  const actionsBusy =
+    pendingAction !== null || pendingRollbackId !== null || deploymentBusy;
   const hasUsableContainer =
     latestDeployment?.containerId != null &&
     (latestDeployment.status === "RUNNING" || latestDeployment.status === "STOPPED");
@@ -192,6 +195,7 @@ export default function ProjectDetailsPage() {
 
     setPendingAction(action);
     setActionError(null);
+    setActionSuccess(null);
     const trackingController = new AbortController();
     const tracksNewDeployment = action === "deploy" || action === "redeploy";
     const trackingPromise = tracksNewDeployment
@@ -242,6 +246,54 @@ export default function ProjectDetailsPage() {
       trackingController.abort();
       await trackingPromise;
       setPendingAction(null);
+    }
+  };
+
+  const runRollback = async (sourceDeployment: Deployment) => {
+    if (
+      token === null ||
+      actionsBusy ||
+      sourceDeployment.status !== "STOPPED" ||
+      sourceDeployment.commitHash === null
+    ) {
+      return;
+    }
+
+    setPendingRollbackId(sourceDeployment.id);
+    setActionError(null);
+    setActionSuccess(null);
+    const trackingController = new AbortController();
+    const trackingPromise = trackNewDeployment(
+      new Set(deployments.map((deployment) => deployment.id)),
+      trackingController.signal,
+    );
+
+    try {
+      const rollbackDeployment = await deploymentApi.rollback(
+        token,
+        sourceDeployment.id,
+      );
+      await loadProject(undefined, false);
+      setSelectedDeploymentId(rollbackDeployment.id);
+      setActionSuccess(
+        `Rollback completed. Deployment ${rollbackDeployment.id} is running.`,
+      );
+    } catch (requestError: unknown) {
+      if (requestError instanceof ApiError && requestError.status === 401) {
+        logout();
+        return;
+      }
+
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Rollback could not be completed.",
+      );
+      await loadProject(undefined, false);
+    } finally {
+      trackingController.abort();
+      await trackingPromise;
+      setPendingRollbackId(null);
     }
   };
 
@@ -337,6 +389,15 @@ export default function ProjectDetailsPage() {
                 role="alert"
               >
                 {actionError}
+              </div>
+            ) : null}
+
+            {actionSuccess !== null ? (
+              <div
+                className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+                role="status"
+              >
+                {actionSuccess}
               </div>
             ) : null}
 
@@ -512,6 +573,7 @@ export default function ProjectDetailsPage() {
                         <th className="px-4 py-3 font-semibold" scope="col">Created</th>
                         <th className="px-4 py-3 font-semibold" scope="col">Started</th>
                         <th className="px-6 py-3 font-semibold" scope="col">Finished</th>
+                        <th className="px-6 py-3 font-semibold" scope="col">Rollback</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -536,7 +598,14 @@ export default function ProjectDetailsPage() {
                             </button>
                           </td>
                           <td className="px-4 py-4">
-                            <StatusBadge status={deployment.status} />
+                            <div className="flex flex-col items-start gap-2">
+                              <StatusBadge status={deployment.status} />
+                              {deployment.status === "RUNNING" ? (
+                                <span className="text-xs font-semibold text-emerald-700">
+                                  Currently running
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="max-w-52 truncate px-4 py-4 font-mono text-xs" title={deployment.commitHash ?? undefined}>
                             {deployment.commitHash ?? "—"}
@@ -549,6 +618,30 @@ export default function ProjectDetailsPage() {
                           </td>
                           <td className="whitespace-nowrap px-6 py-4">
                             {formatDateTime(deployment.finishedAt)}
+                          </td>
+                          <td className="whitespace-nowrap px-6 py-4">
+                            {deployment.status === "STOPPED" &&
+                            deployment.commitHash !== null ? (
+                              <button
+                                className="button-secondary"
+                                disabled={actionsBusy}
+                                onClick={() => void runRollback(deployment)}
+                                type="button"
+                              >
+                                {pendingRollbackId === deployment.id
+                                  ? "Rolling back…"
+                                  : "Rollback"}
+                              </button>
+                            ) : deployment.rollbackSourceDeploymentId !== null ? (
+                              <span
+                                className="text-xs text-slate-500"
+                                title={deployment.rollbackSourceDeploymentId}
+                              >
+                                From {deployment.rollbackSourceDeploymentId.slice(0, 8)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
                           </td>
                         </tr>
                       ))}

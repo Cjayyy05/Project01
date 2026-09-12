@@ -175,4 +175,74 @@ describe('GitRepositoryService', () => {
 
     expect(await pathExists(result.repositoryPath)).toBe(false);
   });
+
+  it('retrieves an exact commit with argument-safe Git calls', async () => {
+    runGit.mockImplementation(async (args) => {
+      if (args[0] === 'init') {
+        const destination = args.at(-1);
+        if (destination === undefined) throw new Error('Missing destination');
+        await writeFile(join(destination, 'Dockerfile'), 'FROM scratch\n');
+      }
+
+      if (args.at(-2) === 'rev-parse') return `${commitHash.toUpperCase()}\n`;
+      return '';
+    });
+    const service = new GitRepositoryService({ runGit });
+
+    const result = await service.prepareRepositoryAtCommit({
+      repositoryUrl,
+      branch: 'main',
+      commitHash: commitHash.toUpperCase(),
+    });
+
+    expect(runGit).toHaveBeenNthCalledWith(1, [
+      'init',
+      '--',
+      result.repositoryPath,
+    ]);
+    expect(runGit).toHaveBeenNthCalledWith(2, [
+      '-C',
+      result.repositoryPath,
+      'remote',
+      'add',
+      'origin',
+      repositoryUrl,
+    ]);
+    expect(runGit).toHaveBeenNthCalledWith(3, [
+      '-C',
+      result.repositoryPath,
+      'fetch',
+      '--depth',
+      '1',
+      'origin',
+      commitHash,
+    ]);
+    expect(runGit).toHaveBeenNthCalledWith(4, [
+      '-C',
+      result.repositoryPath,
+      'checkout',
+      '--detach',
+      'FETCH_HEAD',
+    ]);
+    expect(result.commitHash).toBe(commitHash);
+
+    await service.cleanup(result.repositoryPath);
+    expect(await pathExists(result.repositoryPath)).toBe(false);
+  });
+
+  it('rejects an invalid rollback commit before invoking Git', async () => {
+    const service = new GitRepositoryService({ runGit });
+
+    await expect(
+      service.prepareRepositoryAtCommit({
+        repositoryUrl,
+        branch: 'main',
+        commitHash: '--upload-pack=malicious',
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Repository commit hash is invalid',
+    });
+    expect(runGit).not.toHaveBeenCalled();
+  });
 });

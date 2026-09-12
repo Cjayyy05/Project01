@@ -162,4 +162,23 @@ describe('DockerBuildService', () => {
     expect(docker.getImage).toHaveBeenCalledWith(imageTag);
     expect(removeImage).toHaveBeenCalledWith({ force: true });
   });
+
+  it('checks whether a rollback image is still available', async () => {
+    const docker = createDocker(() => undefined);
+    const service = new DockerBuildService(docker);
+
+    await expect(service.imageExists(imageId)).resolves.toBe(true);
+    expect(docker.getImage).toHaveBeenCalledWith(imageId);
+  });
+
+  it('reports a missing rollback image without treating it as a Docker failure', async () => {
+    const docker = createDocker(() => undefined);
+    docker.getImage.mockReturnValueOnce({
+      inspect: vi.fn().mockRejectedValue({ statusCode: 404 }),
+      remove: removeImage,
+    });
+    const service = new DockerBuildService(docker);
+
+    await expect(service.imageExists(imageId)).resolves.toBe(false);
+  });
 });

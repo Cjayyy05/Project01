@@ -65,6 +65,16 @@ export const redeployDeployment: RequestHandler = async (request, response) => {
   response.status(201).json({ deployment });
 };
 
+export const rollbackDeployment: RequestHandler = async (request, response) => {
+  const deployment = await deploymentService.rollbackDeployment(
+    getAuthenticatedUserId(request),
+    request.params.id,
+    broadcastDeploymentEvent,
+  );
+
+  response.status(201).json({ deployment });
+};
+
 export const getDeploymentLogs: RequestHandler = async (request, response) => {
   const logs = await deploymentService.getDeploymentLogs(
     getAuthenticatedUserId(request),

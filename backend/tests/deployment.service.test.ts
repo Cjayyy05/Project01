@@ -16,6 +16,7 @@ const projectId = '11111111-1111-4111-8111-111111111111';
 const userId = '99999999-9999-4999-8999-999999999999';
 const deploymentId = '22222222-2222-4222-8222-222222222222';
 const redeploymentId = '33333333-3333-4333-8333-333333333333';
+const rollbackDeploymentId = '44444444-4444-4444-8444-444444444444';
 const containerId = 'a'.repeat(64);
 const previousContainerId = 'd'.repeat(64);
 const commitHash = 'b'.repeat(40);
@@ -74,6 +75,9 @@ describe('DeploymentService', () => {
   let prepareRepository: ReturnType<
     typeof vi.fn<DeploymentGitService['prepareRepository']>
   >;
+  let prepareRepositoryAtCommit: ReturnType<
+    typeof vi.fn<DeploymentGitService['prepareRepositoryAtCommit']>
+  >;
   let cleanupRepository: ReturnType<
     typeof vi.fn<DeploymentGitService['cleanup']>
   >;
@@ -82,6 +86,9 @@ describe('DeploymentService', () => {
   >;
   let removeImage: ReturnType<
     typeof vi.fn<DeploymentBuildService['removeImage']>
+  >;
+  let imageExists: ReturnType<
+    typeof vi.fn<DeploymentBuildService['imageExists']>
   >;
   let startContainer: ReturnType<
     typeof vi.fn<DeploymentContainerService['startContainer']>
@@ -98,6 +105,7 @@ describe('DeploymentService', () => {
     currentDeployment = {
       id: deploymentId,
       projectId,
+      rollbackSourceDeploymentId: null,
       commitHash: null,
       status: DeploymentStatus.QUEUED,
       containerId: null,
@@ -139,6 +147,9 @@ describe('DeploymentService', () => {
     prepareRepository = vi
       .fn<DeploymentGitService['prepareRepository']>()
       .mockResolvedValue(preparedRepository);
+    prepareRepositoryAtCommit = vi
+      .fn<DeploymentGitService['prepareRepositoryAtCommit']>()
+      .mockResolvedValue(preparedRepository);
     cleanupRepository = vi
       .fn<DeploymentGitService['cleanup']>()
       .mockResolvedValue(undefined);
@@ -151,6 +162,9 @@ describe('DeploymentService', () => {
     removeImage = vi
       .fn<DeploymentBuildService['removeImage']>()
       .mockResolvedValue(undefined);
+    imageExists = vi
+      .fn<DeploymentBuildService['imageExists']>()
+      .mockResolvedValue(true);
     startContainer = vi
       .fn<DeploymentContainerService['startContainer']>()
       .mockResolvedValue(startedContainer);
@@ -168,9 +182,10 @@ describe('DeploymentService', () => {
     };
     gitService = {
       prepareRepository,
+      prepareRepositoryAtCommit,
       cleanup: cleanupRepository,
     };
-    buildService = { buildImage, removeImage };
+    buildService = { buildImage, imageExists, removeImage };
     containerService = {
       startContainer,
       stopContainer: vi.fn().mockResolvedValue(startedContainer),
@@ -243,6 +258,58 @@ describe('DeploymentService', () => {
     );
 
     return records;
+  };
+
+  const configureRollbackRecords = () => {
+    const sourceDeployment: DeploymentRecord = {
+      ...currentDeployment,
+      status: DeploymentStatus.STOPPED,
+      commitHash,
+      containerId: 'e'.repeat(64),
+      imageId,
+      imageTag,
+      hostPort: 49_150,
+      startedAt: now,
+      finishedAt: now,
+    };
+    const activeDeployment: DeploymentRecord = {
+      ...sourceDeployment,
+      id: redeploymentId,
+      status: DeploymentStatus.RUNNING,
+      containerId: previousContainerId,
+      hostPort: 49_152,
+      finishedAt: null,
+    };
+    const records = new Map<string, DeploymentRecord>([
+      [sourceDeployment.id, sourceDeployment],
+      [activeDeployment.id, activeDeployment],
+    ]);
+
+    findOwnedDeployment.mockResolvedValue({ ...sourceDeployment, project });
+    createDeployment.mockImplementation(({ data }) => {
+      const rollback: DeploymentRecord = {
+        ...currentDeployment,
+        id: rollbackDeploymentId,
+        ...data,
+      };
+      records.set(rollback.id, rollback);
+      currentDeployment = rollback;
+      return Promise.resolve(rollback);
+    });
+    updateDeployment.mockImplementation(({ where, data }) => {
+      const existing = records.get(where.id);
+      if (existing === undefined) return Promise.reject(new Error('not found'));
+
+      const updated = { ...existing, ...data, updatedAt: now };
+      records.set(updated.id, updated);
+      if (updated.id === rollbackDeploymentId) currentDeployment = updated;
+      return Promise.resolve(updated);
+    });
+    findDeployments.mockImplementation(() =>
+      Promise.resolve([...records.values()]),
+    );
+
+    return { records, sourceDeployment };
   };
 
   const recordedStatuses = () => [
@@ -370,6 +437,159 @@ describe('DeploymentService', () => {
     expect(records.get(deploymentId)?.status).toBe(DeploymentStatus.RUNNING);
     expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.FAILED);
     expect(stopContainer).not.toHaveBeenCalled();
+  });
+
+  it('creates a new rollback deployment from an existing image before cutting over', async () => {
+    const { records, sourceDeployment } = configureRollbackRecords();
+    const stopContainer = vi.mocked(containerService.stopContainer);
+    const events: DeploymentEvent[] = [];
+
+    const result = await createService().rollbackDeployment(
+      userId,
+      deploymentId,
+      (event) => events.push(event),
+    );
+
+    expect(createDeployment).toHaveBeenCalledWith({
+      data: {
+        projectId,
+        status: DeploymentStatus.QUEUED,
+        rollbackSourceDeploymentId: deploymentId,
+      },
+    });
+    expect(imageExists).toHaveBeenCalledWith(imageId);
+    expect(prepareRepositoryAtCommit).not.toHaveBeenCalled();
+    expect(buildImage).not.toHaveBeenCalled();
+    expect(startContainer).toHaveBeenCalledWith({
+      imageIdentifier: imageId,
+      containerPort: project.containerPort,
+      deploymentId: rollbackDeploymentId,
+    });
+    expect(result).toMatchObject({
+      id: rollbackDeploymentId,
+      rollbackSourceDeploymentId: deploymentId,
+      commitHash,
+      imageId,
+      status: DeploymentStatus.RUNNING,
+    });
+    expect(records.get(deploymentId)).toEqual(sourceDeployment);
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.STOPPED);
+    expect(records.size).toBe(3);
+    expect(stopContainer).toHaveBeenCalledWith(previousContainerId);
+
+    const runningUpdateIndex = updateDeployment.mock.calls.findIndex(
+      ([options]) =>
+        options.where.id === rollbackDeploymentId &&
+        options.data.status === DeploymentStatus.RUNNING,
+    );
+    const runningUpdateCallOrder =
+      updateDeployment.mock.invocationCallOrder[runningUpdateIndex];
+    const [stopCallOrder] = stopContainer.mock.invocationCallOrder;
+    if (runningUpdateCallOrder === undefined || stopCallOrder === undefined) {
+      throw new Error('Expected rollback startup before old-container stop');
+    }
+    expect(runningUpdateCallOrder).toBeLessThan(stopCallOrder);
+    expect(events).toContainEqual({
+      type: 'log',
+      deploymentId: rollbackDeploymentId,
+      source: 'deployment',
+      message: `Rolling back from deployment ${deploymentId}`,
+    });
+  });
+
+  it('rebuilds the exact saved commit when the rollback image is unavailable', async () => {
+    configureRollbackRecords();
+    imageExists.mockResolvedValue(false);
+
+    const result = await createService().rollbackDeployment(userId, deploymentId);
+
+    expect(prepareRepositoryAtCommit).toHaveBeenCalledWith({
+      repositoryUrl: project.repositoryUrl,
+      branch: project.branch,
+      commitHash,
+    });
+    expect(prepareRepository).not.toHaveBeenCalled();
+    expect(buildImage).toHaveBeenCalledWith(
+      {
+        repositoryDirectory: preparedRepository.repositoryPath,
+        projectId,
+        deploymentId: rollbackDeploymentId,
+      },
+      expect.any(Function),
+    );
+    expect(cleanupRepository).toHaveBeenCalledWith(
+      preparedRepository.repositoryPath,
+    );
+    expect(result).toMatchObject({
+      id: rollbackDeploymentId,
+      rollbackSourceDeploymentId: deploymentId,
+      status: DeploymentStatus.RUNNING,
+    });
+  });
+
+  it('rejects a failed deployment as a rollback source before creating history', async () => {
+    findOwnedDeployment.mockResolvedValue({
+      ...currentDeployment,
+      status: DeploymentStatus.FAILED,
+      commitHash,
+      project,
+    });
+
+    await expect(
+      createService().rollbackDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'Only a previously successful deployment can be rolled back',
+    });
+    expect(createDeployment).not.toHaveBeenCalled();
+    expect(imageExists).not.toHaveBeenCalled();
+    expect(startContainer).not.toHaveBeenCalled();
+  });
+
+  it('leaves the running deployment available when rollback startup fails', async () => {
+    const { records, sourceDeployment } = configureRollbackRecords();
+    const stopContainer = vi.mocked(containerService.stopContainer);
+    startContainer.mockRejectedValue(
+      new AppError(422, 'Unable to create and start container'),
+    );
+
+    await expect(
+      createService().rollbackDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: 'Unable to create and start container',
+    });
+
+    expect(records.get(deploymentId)).toEqual(sourceDeployment);
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(rollbackDeploymentId)).toMatchObject({
+      status: DeploymentStatus.FAILED,
+      rollbackSourceDeploymentId: deploymentId,
+    });
+    expect(stopContainer).not.toHaveBeenCalled();
+    expect(removeImage).not.toHaveBeenCalled();
+  });
+
+  it('does not tear down a running rollback replacement when cutover cleanup fails', async () => {
+    const { records } = configureRollbackRecords();
+    vi.mocked(containerService.stopContainer).mockRejectedValue(
+      new Error('Docker stop failed'),
+    );
+
+    await expect(
+      createService().rollbackDeployment(userId, deploymentId),
+    ).rejects.toMatchObject({
+      statusCode: 500,
+      message:
+        'New deployment is running but a previous deployment could not be stopped',
+    });
+
+    expect(records.get(redeploymentId)?.status).toBe(DeploymentStatus.RUNNING);
+    expect(records.get(rollbackDeploymentId)?.status).toBe(
+      DeploymentStatus.RUNNING,
+    );
+    expect(removeContainer).not.toHaveBeenCalled();
+    expect(removeImage).not.toHaveBeenCalled();
   });
 
   it('marks a clone failure without exposing the infrastructure error', async () => {

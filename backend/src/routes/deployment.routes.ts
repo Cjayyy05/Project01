@@ -6,6 +6,7 @@ import {
   getDeploymentMetrics,
   redeployDeployment,
   restartDeployment,
+  rollbackDeployment,
   stopDeployment,
 } from '../controllers/deployment.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
@@ -17,5 +18,6 @@ deploymentRouter.get('/:id', getDeployment);
 deploymentRouter.post('/:id/stop', stopDeployment);
 deploymentRouter.post('/:id/restart', restartDeployment);
 deploymentRouter.post('/:id/redeploy', redeployDeployment);
+deploymentRouter.post('/:id/rollback', rollbackDeployment);
 deploymentRouter.get('/:id/logs', getDeploymentLogs);
 deploymentRouter.get('/:id/metrics', getDeploymentMetrics);

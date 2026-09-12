@@ -15,6 +15,10 @@ export type GitRepositoryInput = {
   branch: string;
 };
 
+export type GitRepositoryCommitInput = GitRepositoryInput & {
+  commitHash: string;
+};
+
 export type PreparedGitRepository = {
   repositoryPath: string;
   commitHash: string;
@@ -196,6 +200,103 @@ export class GitRepositoryService {
     }
   }
 
+  public async prepareRepositoryAtCommit(
+    input: GitRepositoryCommitInput,
+  ): Promise<PreparedGitRepository> {
+    const repository = parseGitHubRepositoryUrl(input.repositoryUrl);
+    const branch = parseBranch(input.branch);
+    const commitHash = input.commitHash.trim().toLowerCase();
+
+    if (!COMMIT_HASH_PATTERN.test(commitHash)) {
+      throw new AppError(400, 'Repository commit hash is invalid');
+    }
+
+    let repositoryPath: string;
+
+    try {
+      repositoryPath = await mkdtemp(
+        join(tmpdir(), TEMPORARY_DIRECTORY_PREFIX),
+      );
+      this.#managedDirectories.add(repositoryPath);
+    } catch {
+      throw new AppError(500, 'Unable to create temporary repository directory');
+    }
+
+    try {
+      try {
+        await this.#runGit(['init', '--', repositoryPath]);
+        await this.#runGit([
+          '-C',
+          repositoryPath,
+          'remote',
+          'add',
+          'origin',
+          repository.repositoryUrl,
+        ]);
+        await this.#runGit([
+          '-C',
+          repositoryPath,
+          'fetch',
+          '--depth',
+          '1',
+          'origin',
+          commitHash,
+        ]);
+        await this.#runGit([
+          '-C',
+          repositoryPath,
+          'checkout',
+          '--detach',
+          'FETCH_HEAD',
+        ]);
+      } catch {
+        throw new AppError(422, 'Repository commit could not be retrieved');
+      }
+
+      let checkedOutCommit: string;
+
+      try {
+        checkedOutCommit = (
+          await this.#runGit(['-C', repositoryPath, 'rev-parse', 'HEAD'])
+        )
+          .trim()
+          .toLowerCase();
+      } catch {
+        throw new AppError(422, 'Unable to verify repository commit');
+      }
+
+      if (checkedOutCommit !== commitHash) {
+        throw new AppError(422, 'Repository returned an unexpected commit');
+      }
+
+      await this.#verifyRootDockerfile(repositoryPath);
+
+      return {
+        repositoryPath,
+        commitHash,
+        metadata: {
+          provider: 'github',
+          owner: repository.owner,
+          name: repository.name,
+          repositoryUrl: repository.repositoryUrl,
+          branch,
+        },
+      };
+    } catch (error: unknown) {
+      try {
+        await this.#removeManagedDirectory(repositoryPath);
+      } catch {
+        throw new AppError(
+          500,
+          'Repository operation failed and temporary cleanup was unsuccessful',
+        );
+      }
+
+      if (error instanceof AppError) throw error;
+      throw new AppError(500, 'Unable to prepare repository commit');
+    }
+  }
+
   public async cleanup(repositoryPath: string): Promise<void> {
     if (!this.#managedDirectories.has(repositoryPath)) {
       throw new AppError(400, 'Repository path is not managed by this service');
@@ -205,6 +306,22 @@ export class GitRepositoryService {
       await this.#removeManagedDirectory(repositoryPath);
     } catch {
       throw new AppError(500, 'Unable to clean up temporary repository');
+    }
+  }
+
+  async #verifyRootDockerfile(repositoryPath: string): Promise<void> {
+    try {
+      const dockerfile = await lstat(join(repositoryPath, 'Dockerfile'));
+
+      if (!dockerfile.isFile()) {
+        throw new AppError(422, 'Dockerfile not found at repository root');
+      }
+    } catch (error: unknown) {
+      if (error instanceof AppError) throw error;
+      if (isMissingFileError(error)) {
+        throw new AppError(422, 'Dockerfile not found at repository root');
+      }
+      throw new AppError(500, 'Unable to inspect repository Dockerfile');
     }
   }
 

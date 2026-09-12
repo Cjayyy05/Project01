@@ -34,6 +34,7 @@ export type DeploymentProject = {
 export type DeploymentRecord = {
   id: string;
   projectId: string;
+  rollbackSourceDeploymentId: string | null;
   commitHash: string | null;
   status: DeploymentStatusValue;
   containerId: string | null;
@@ -117,7 +118,11 @@ export type DeploymentDatabase = {
   };
   deployment: {
     create: (options: {
-      data: { projectId: string; status: DeploymentStatusValue };
+      data: {
+        projectId: string;
+        status: DeploymentStatusValue;
+        rollbackSourceDeploymentId?: string;
+      };
     }) => Promise<DeploymentRecord>;
     update: (options: {
       where: { id: string };
@@ -145,12 +150,12 @@ export type DeploymentDatabase = {
 
 export type DeploymentGitService = Pick<
   typeof gitRepositoryService,
-  'prepareRepository' | 'cleanup'
+  'prepareRepository' | 'prepareRepositoryAtCommit' | 'cleanup'
 >;
 
 export type DeploymentBuildService = Pick<
   typeof dockerBuildService,
-  'buildImage' | 'removeImage'
+  'buildImage' | 'imageExists' | 'removeImage'
 >;
 
 export type DeploymentContainerService = Pick<
@@ -375,6 +380,30 @@ export class DeploymentService {
     );
   }
 
+  public async rollbackDeployment(
+    userId: string,
+    rawDeploymentId: unknown,
+    onEvent?: DeploymentEventCallback,
+  ): Promise<DeploymentRecord> {
+    const sourceDeployment = await this.#getOwnedDeployment(
+      userId,
+      parseIdentifier(rawDeploymentId, 'Deployment ID'),
+    );
+
+    if (
+      (sourceDeployment.status !== DeploymentStatus.RUNNING &&
+        sourceDeployment.status !== DeploymentStatus.STOPPED) ||
+      sourceDeployment.commitHash === null
+    ) {
+      throw new AppError(
+        409,
+        'Only a previously successful deployment can be rolled back',
+      );
+    }
+
+    return this.#executeRollback(sourceDeployment, onEvent);
+  }
+
   public async deployProjectReplacingRunning(
     rawProjectId: unknown,
     onEvent?: DeploymentEventCallback,
@@ -555,6 +584,186 @@ export class DeploymentService {
     }
   }
 
+  async #executeRollback(
+    sourceDeployment: OwnedDeployment,
+    onEvent: DeploymentEventCallback | undefined,
+  ): Promise<DeploymentRecord> {
+    const commitHash = sourceDeployment.commitHash;
+
+    if (commitHash === null) {
+      throw new AppError(409, 'Rollback source does not have a commit hash');
+    }
+
+    let deployment: DeploymentRecord;
+
+    try {
+      deployment = await this.#database.deployment.create({
+        data: {
+          projectId: sourceDeployment.projectId,
+          status: DeploymentStatus.QUEUED,
+          rollbackSourceDeploymentId: sourceDeployment.id,
+        },
+      });
+    } catch {
+      throw new AppError(500, 'Unable to initialize rollback deployment');
+    }
+
+    this.#emit(onEvent, {
+      type: 'status',
+      deploymentId: deployment.id,
+      status: DeploymentStatus.QUEUED,
+    });
+    this.#emitLog(
+      onEvent,
+      deployment.id,
+      'deployment',
+      `Rolling back from deployment ${sourceDeployment.id}`,
+    );
+
+    let stage: DeploymentStatusValue = DeploymentStatus.QUEUED;
+    let repository: PreparedGitRepository | undefined;
+    let builtImage: DockerBuildResult | undefined;
+    let startedContainer: StartContainerResult | undefined;
+
+    try {
+      deployment = await this.#updateDeployment(deployment.id, { commitHash });
+
+      const reusableImageIdentifier =
+        sourceDeployment.imageId ?? sourceDeployment.imageTag;
+      const canReuseImage =
+        reusableImageIdentifier !== null &&
+        (await this.#buildService.imageExists(reusableImageIdentifier));
+      let imageIdentifier: string;
+
+      if (canReuseImage) {
+        imageIdentifier = reusableImageIdentifier;
+        const reusedImageData: DeploymentUpdateData = {};
+        if (sourceDeployment.imageId !== null) {
+          reusedImageData.imageId = sourceDeployment.imageId;
+        }
+        if (sourceDeployment.imageTag !== null) {
+          reusedImageData.imageTag = sourceDeployment.imageTag;
+        }
+        deployment = await this.#updateDeployment(
+          deployment.id,
+          reusedImageData,
+        );
+        this.#emitLog(
+          onEvent,
+          deployment.id,
+          'deployment',
+          `Reusing image from deployment ${sourceDeployment.id}`,
+        );
+      } else {
+        stage = DeploymentStatus.CLONING;
+        deployment = await this.#changeStatus(deployment.id, stage, onEvent);
+        this.#emitLog(
+          onEvent,
+          deployment.id,
+          'deployment',
+          `Retrieving commit ${commitHash}`,
+        );
+        repository = await this.#gitService.prepareRepositoryAtCommit({
+          repositoryUrl: sourceDeployment.project.repositoryUrl,
+          branch: sourceDeployment.project.branch,
+          commitHash,
+        });
+
+        stage = DeploymentStatus.BUILDING;
+        deployment = await this.#changeStatus(deployment.id, stage, onEvent);
+        builtImage = await this.#buildService.buildImage(
+          {
+            repositoryDirectory: repository.repositoryPath,
+            projectId: sourceDeployment.projectId,
+            deploymentId: deployment.id,
+          },
+          (output) => {
+            const message = formatBuildOutput(output);
+            if (message !== null) {
+              this.#emitLog(onEvent, deployment.id, 'build', message);
+            }
+          },
+        );
+        imageIdentifier = builtImage.imageId;
+        deployment = await this.#updateDeployment(deployment.id, {
+          imageId: builtImage.imageId,
+          imageTag: builtImage.imageTag,
+        });
+      }
+
+      stage = DeploymentStatus.STARTING;
+      deployment = await this.#changeStatus(deployment.id, stage, onEvent);
+      startedContainer = await this.#containerService.startContainer({
+        imageIdentifier,
+        containerPort: sourceDeployment.project.containerPort,
+        deploymentId: deployment.id,
+      });
+      deployment = await this.#updateDeployment(deployment.id, {
+        containerId: startedContainer.containerId,
+        hostPort: startedContainer.hostPort,
+      });
+
+      stage = DeploymentStatus.RUNNING;
+      deployment = await this.#updateDeployment(deployment.id, {
+        status: stage,
+        startedAt: this.#now(),
+        finishedAt: null,
+        errorMessage: null,
+      });
+      this.#emit(onEvent, {
+        type: 'status',
+        deploymentId: deployment.id,
+        status: stage,
+      });
+
+      if (repository !== undefined) {
+        await this.#gitService.cleanup(repository.repositoryPath);
+        repository = undefined;
+      }
+
+    } catch (error: unknown) {
+      const errorMessage = getSafeFailureMessage(error, stage);
+      await this.#cleanupResources(
+        repository,
+        builtImage,
+        startedContainer,
+      );
+
+      try {
+        deployment = await this.#updateDeployment(deployment.id, {
+          status: DeploymentStatus.FAILED,
+          errorMessage,
+          finishedAt: this.#now(),
+        });
+      } catch {
+        throw new AppError(500, 'Rollback failed and status could not be saved');
+      }
+
+      this.#emit(onEvent, {
+        type: 'status',
+        deploymentId: deployment.id,
+        status: DeploymentStatus.FAILED,
+      });
+      this.#emit(onEvent, {
+        type: 'failed',
+        deployment,
+        errorMessage,
+      });
+
+      const statusCode = error instanceof AppError ? error.statusCode : 422;
+      throw new AppError(statusCode, errorMessage);
+    }
+
+    await this.#stopPreviousRunningDeployments(
+      sourceDeployment.projectId,
+      deployment.id,
+      onEvent,
+    );
+
+    this.#emit(onEvent, { type: 'completed', deployment });
+    return deployment;
+  }
+
   async #changeStatus(
     deploymentId: string,
     status: DeploymentStatusValue,
@@ -627,6 +836,7 @@ export class DeploymentService {
     return {
       id: deployment.id,
       projectId: deployment.projectId,
+      rollbackSourceDeploymentId: deployment.rollbackSourceDeploymentId,
       commitHash: deployment.commitHash,
       status: deployment.status,
       containerId: deployment.containerId,

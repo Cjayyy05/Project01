@@ -22,6 +22,7 @@ const now = new Date('2026-09-04T04:00:00.000Z');
 const deployment: DeploymentRecord = {
   id: deploymentId,
   projectId: 'a382fb3d-dce4-4470-8e41-89a181466ce8',
+  rollbackSourceDeploymentId: null,
   commitHash: 'a'.repeat(40),
   status: DeploymentStatus.RUNNING,
   containerId: 'b'.repeat(64),
