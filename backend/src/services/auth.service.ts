@@ -1,4 +1,5 @@
 import { database } from '../config/database.js';
+import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { createAccessToken } from './token.service.js';
@@ -31,7 +32,12 @@ const isUniqueConstraintError = (error: unknown): boolean =>
 export const registerUser = async (
   email: string,
   password: string,
+  registrationEnabled = env.registrationEnabled,
 ): Promise<PublicUser> => {
+  if (!registrationEnabled) {
+    throw new AppError(403, 'Registration is disabled by the DeployFlow operator');
+  }
+
   const existingUser = await database.user.findUnique({
     where: { email },
     select: { id: true },
@@ -94,4 +100,3 @@ export const getAuthenticatedUser = async (
 
   return user;
 };
-

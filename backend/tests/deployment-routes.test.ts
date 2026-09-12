@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const databaseMocks = vi.hoisted(() => ({
   projectFindUnique: vi.fn<(args: unknown) => Promise<unknown>>(),
   projectFindFirst: vi.fn<(args: unknown) => Promise<unknown>>(),
+  projectUpdateMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(),
   deploymentCreate: vi.fn<(args: unknown) => Promise<unknown>>(),
   deploymentUpdate: vi.fn<(args: unknown) => Promise<unknown>>(),
   deploymentFindFirst: vi.fn<(args: unknown) => Promise<unknown>>(),
@@ -41,6 +42,7 @@ vi.mock('../src/config/database.js', () => ({
     project: {
       findUnique: databaseMocks.projectFindUnique,
       findFirst: databaseMocks.projectFindFirst,
+      updateMany: databaseMocks.projectUpdateMany,
     },
     deployment: {
       create: databaseMocks.deploymentCreate,
@@ -152,6 +154,7 @@ beforeEach(() => {
 
   databaseMocks.projectFindFirst.mockResolvedValue(project);
   databaseMocks.projectFindUnique.mockResolvedValue(project);
+  databaseMocks.projectUpdateMany.mockResolvedValue({ count: 1 });
   databaseMocks.deploymentCreate.mockImplementation((rawOptions) => {
     const options = rawOptions as {
       data: Partial<ReturnType<typeof createDeploymentRecord>> & {
@@ -261,6 +264,22 @@ beforeEach(() => {
 });
 
 describe('deployment REST endpoints', () => {
+  it('returns a conflict while another project operation holds the lease', async () => {
+    databaseMocks.projectUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const response = await request(createApp())
+      .post(`/api/projects/${projectId}/deploy`)
+      .set('Authorization', authorization);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: {
+        message: 'Another deployment operation is already active for this project',
+      },
+    });
+    expect(databaseMocks.deploymentCreate).not.toHaveBeenCalled();
+  });
+
   it('accepts a valid owned deployment request', async () => {
     const response = await request(createApp())
       .post(`/api/projects/${projectId}/deploy`)

@@ -70,7 +70,15 @@ The successful lifecycle is `QUEUED → CLONING → BUILDING → STARTING → HE
 
 ## Security limitations
 
+DeployFlow currently assumes deployment repositories are trusted. It is not designed to safely execute arbitrary untrusted public code.
+
 This portfolio MVP is not a secure multi-tenant sandbox. Building and running repository code can give that code access to compute, network, and other resources made available to Docker. Only trusted test repositories may be deployed. Production use would require stronger isolation, resource limits, network controls, image and dependency scanning, secret management, audit logging, rate limits, and host hardening.
+
+Docker provides useful process and filesystem isolation, but DeployFlow does not treat it as a hardened arbitrary-code sandbox. Registration is disabled by default, the backend binds to `127.0.0.1` by default, and deployed application ports are published only on `127.0.0.1`. Operators may explicitly change the backend bind host, but should place authentication, TLS, and network access controls in front of any non-local deployment.
+
+State-changing deployment operations use a renewable, database-backed per-project lease. Concurrent Deploy, Stop, Restart, Redeploy, Rollback, delete, and webhook-triggered replacement requests for one project are rejected while another operation holds the lease. Expired leases can be replaced so a crashed process does not permanently block a project.
+
+Historical container logs use a bounded default tail and response size. DeployFlow-created containers use Docker's `json-file` log driver with rotation. Old deployment history is preserved, while deleting a project first removes the containers and project-specific image tags known through that history.
 
 Secrets must never be committed or hardcoded. Runtime configuration must be supplied through environment variables.
 

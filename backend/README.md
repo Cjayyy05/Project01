@@ -26,6 +26,25 @@ npm run dev
 
 Replace `JWT_SECRET` with a cryptographically random secret of at least 32 characters. `JWT_EXPIRES_IN` controls access-token lifetime and defaults to `1h`.
 
+Generate independent JWT and GitHub webhook secrets in PowerShell with:
+
+```powershell
+[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+Run the command separately for each secret. Placeholder or obviously weak values are rejected outside the test environment, and secret values are never printed by DeployFlow.
+
+Registration and network binding are controlled with:
+
+```env
+REGISTRATION_ENABLED=false
+BIND_HOST=127.0.0.1
+```
+
+Registration is disabled by default. To create the first local account, temporarily set `REGISTRATION_ENABLED=true`, restart the backend, register the account, then restore it to `false` and restart again. Existing users can continue to log in while registration is disabled. The backend and deployed application ports are loopback-only by default.
+
+DeployFlow currently assumes deployment repositories are trusted. It is not designed to safely execute arbitrary untrusted public code. Docker provides isolation, but is not treated as a hardened arbitrary-code sandbox.
+
 `containerPort` is the port the deployed application listens on inside its future Docker container. It must be supplied by the user and is not inferred by DeployFlow.
 
 The API listens on `http://localhost:4000` by default. Verify it with:

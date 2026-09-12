@@ -129,6 +129,10 @@ export default function RegisterPage() {
         >
           {isSubmitting ? "Creating account…" : "Create account"}
         </button>
+        <p className="text-center text-xs leading-5 text-slate-500">
+          Registration may be disabled by the DeployFlow operator. Existing
+          accounts can still sign in.
+        </p>
       </form>
     </AuthShell>
   );

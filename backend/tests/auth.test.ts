@@ -13,6 +13,7 @@ vi.mock('../src/config/database.js', () => ({
 }));
 
 import { createApp } from '../src/app.js';
+import { registerUser } from '../src/services/auth.service.js';
 import { createAccessToken } from '../src/services/token.service.js';
 import { hashPassword } from '../src/utils/password.js';
 
@@ -30,6 +31,17 @@ beforeEach(() => {
 });
 
 describe('POST /api/auth/register', () => {
+  it('rejects registration cleanly when the operator disables it', async () => {
+    await expect(
+      registerUser('user@example.com', 'Secure123', false),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      message: 'Registration is disabled by the DeployFlow operator',
+    });
+    expect(databaseMocks.findUnique).not.toHaveBeenCalled();
+    expect(databaseMocks.create).not.toHaveBeenCalled();
+  });
+
   it('registers a user and never returns the password hash', async () => {
     databaseMocks.findUnique.mockResolvedValue(null);
     databaseMocks.create.mockResolvedValue(user);

@@ -61,4 +61,6 @@ GitHub cannot send webhooks directly to `localhost`. For local testing, create a
 
 Only expose the webhook endpoint for testing, keep the tunnel URL private where practical, and stop the tunnel when finished. The webhook HMAC must remain enabled even when a tunnel is used.
 
+A simple tunnel to the backend origin may expose more than the webhook route. Configure tunnel or reverse-proxy routing so only `/api/webhooks/github/*` is public, or protect the remaining application through an access-control layer. Keep `REGISTRATION_ENABLED=false` while the backend is reachable through a public tunnel.
+
 After pushing to the configured branch, GitHub's webhook delivery page should show an HTTP `202` response. DeployFlow will add a new deployment to the project's history and stream its normal status and log events.

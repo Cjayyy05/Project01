@@ -12,6 +12,7 @@ import {
   type DeploymentHealthCheckService,
   type DeploymentRecord,
 } from '../src/services/deployment.service.js';
+import type { ProjectOperationLock } from '../src/services/project-operation-lock.service.js';
 import { AppError } from '../src/utils/app-error.js';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
@@ -109,6 +110,7 @@ describe('DeploymentService', () => {
   let gitService: DeploymentGitService;
   let buildService: DeploymentBuildService;
   let containerService: DeploymentContainerService;
+  let operationLock: ProjectOperationLock;
 
   beforeEach(() => {
     currentDeployment = {
@@ -228,6 +230,12 @@ describe('DeploymentService', () => {
         uptimeSeconds: 0,
       }),
     };
+    operationLock = {
+      runExclusive: async <T>(
+        _lockedProjectId: string,
+        operation: () => Promise<T>,
+      ): Promise<T> => operation(),
+    };
   });
 
   const createService = () =>
@@ -238,6 +246,7 @@ describe('DeploymentService', () => {
       healthCheckService: { waitUntilHealthy },
       buildService,
       containerService,
+      operationLock,
       now: () => now,
     });
 

@@ -1,5 +1,8 @@
 import { database } from '../config/database.js';
 import { AppError } from '../utils/app-error.js';
+import { containerService } from './container.service.js';
+import { dockerBuildService } from './docker-build.service.js';
+import { projectOperationLockService } from './project-operation-lock.service.js';
 
 type CreateProjectData = {
   name: string;
@@ -71,11 +74,64 @@ export const deleteProject = async (
   userId: string,
   projectId: string,
 ): Promise<void> => {
-  const result = await database.project.deleteMany({
-    where: { id: projectId, userId },
-  });
+  await getProject(userId, projectId);
 
-  if (result.count === 0) {
-    throw new AppError(404, 'Project not found');
-  }
+  await projectOperationLockService.runExclusive(projectId, async () => {
+    const deployments = await database.deployment.findMany({
+      where: { projectId },
+      select: {
+        containerId: true,
+        imageTag: true,
+      },
+    });
+
+    const containerIds = new Set(
+      deployments.flatMap(({ containerId }) =>
+        containerId === null ? [] : [containerId],
+      ),
+    );
+
+    try {
+      for (const containerId of containerIds) {
+        let status;
+
+        try {
+          status = await containerService.inspectStatus(containerId);
+        } catch (error: unknown) {
+          if (error instanceof AppError && error.statusCode === 404) continue;
+          throw error;
+        }
+
+        if (status.running) {
+          await containerService.stopContainer(containerId);
+        }
+        await containerService.removeContainer(containerId);
+      }
+
+      const imageTags = new Set(
+        deployments.flatMap(({ imageTag }) =>
+          imageTag === null ? [] : [imageTag],
+        ),
+      );
+
+      for (const imageTag of imageTags) {
+        if (await dockerBuildService.imageExists(imageTag)) {
+          await dockerBuildService.removeImage(imageTag);
+        }
+      }
+    } catch {
+      throw new AppError(
+        502,
+        'Project Docker resources could not be cleaned up; the project was not deleted',
+      );
+    }
+
+    const result = await database.project.deleteMany({
+      where: { id: projectId, userId },
+    });
+
+    if (result.count === 0) {
+      throw new AppError(404, 'Project not found');
+    }
+  });
 };

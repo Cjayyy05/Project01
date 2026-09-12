@@ -25,6 +25,10 @@ import {
   gitRepositoryService,
   type PreparedGitRepository,
 } from './git-repository.service.js';
+import {
+  projectOperationLockService,
+  type ProjectOperationLock,
+} from './project-operation-lock.service.js';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -198,6 +202,7 @@ export type DeploymentServiceDependencies = {
   healthCheckService?: DeploymentHealthCheckService;
   buildService?: DeploymentBuildService;
   containerService?: DeploymentContainerService;
+  operationLock?: ProjectOperationLock;
   now?: () => Date;
 };
 
@@ -252,6 +257,7 @@ export class DeploymentService {
   readonly #healthCheckService: DeploymentHealthCheckService;
   readonly #buildService: DeploymentBuildService;
   readonly #containerService: DeploymentContainerService;
+  readonly #operationLock: ProjectOperationLock;
   readonly #now: () => Date;
 
   public constructor(dependencies: DeploymentServiceDependencies = {}) {
@@ -264,6 +270,8 @@ export class DeploymentService {
     this.#buildService = dependencies.buildService ?? dockerBuildService;
     this.#containerService =
       dependencies.containerService ?? containerService;
+    this.#operationLock =
+      dependencies.operationLock ?? projectOperationLockService;
     this.#now = dependencies.now ?? (() => new Date());
   }
 
@@ -274,7 +282,9 @@ export class DeploymentService {
   ): Promise<DeploymentRecord> {
     const projectId = parseIdentifier(rawProjectId, 'Project ID');
     await this.#getOwnedProject(userId, projectId);
-    return this.deployProject(projectId, onEvent);
+    return this.#operationLock.runExclusive(projectId, () =>
+      this.deployProject(projectId, onEvent),
+    );
   }
 
   public async listProjectDeployments(
@@ -310,24 +320,9 @@ export class DeploymentService {
       userId,
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
-    const containerId = this.#requireContainerId(deployment);
-
-    try {
-      await this.#containerService.stopContainer(containerId);
-      const stoppedDeployment = await this.#updateDeployment(deployment.id, {
-        status: DeploymentStatus.STOPPED,
-        finishedAt: this.#now(),
-      });
-      this.#emit(onEvent, {
-        type: 'status',
-        deploymentId: stoppedDeployment.id,
-        status: DeploymentStatus.STOPPED,
-      });
-      return stoppedDeployment;
-    } catch (error: unknown) {
-      if (error instanceof AppError) throw error;
-      throw new AppError(500, 'Unable to stop deployment');
-    }
+    return this.#operationLock.runExclusive(deployment.projectId, () =>
+      this.#stopOwnedDeployment(deployment, onEvent),
+    );
   }
 
   public async restartDeployment(
@@ -339,6 +334,15 @@ export class DeploymentService {
       userId,
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
+    return this.#operationLock.runExclusive(deployment.projectId, () =>
+      this.#restartOwnedDeployment(deployment, onEvent),
+    );
+  }
+
+  async #restartOwnedDeployment(
+    deployment: OwnedDeployment,
+    onEvent: DeploymentEventCallback | undefined,
+  ): Promise<DeploymentRecord> {
     const containerId = this.#requireContainerId(deployment);
     let containerRestarted = false;
 
@@ -433,9 +437,13 @@ export class DeploymentService {
       userId,
       parseIdentifier(rawDeploymentId, 'Deployment ID'),
     );
-    return this.deployProjectReplacingRunning(
+    return this.#operationLock.runExclusive(
       previousDeployment.projectId,
-      onEvent,
+      () =>
+        this.#deployProjectReplacingRunningUnlocked(
+          previousDeployment.projectId,
+          onEvent,
+        ),
     );
   }
 
@@ -460,7 +468,9 @@ export class DeploymentService {
       );
     }
 
-    return this.#executeRollback(sourceDeployment, onEvent);
+    return this.#operationLock.runExclusive(sourceDeployment.projectId, () =>
+      this.#executeRollback(sourceDeployment, onEvent),
+    );
   }
 
   public async deployProjectReplacingRunning(
@@ -468,6 +478,15 @@ export class DeploymentService {
     onEvent?: DeploymentEventCallback,
   ): Promise<DeploymentRecord> {
     const projectId = parseIdentifier(rawProjectId, 'Project ID');
+    return this.#operationLock.runExclusive(projectId, () =>
+      this.#deployProjectReplacingRunningUnlocked(projectId, onEvent),
+    );
+  }
+
+  async #deployProjectReplacingRunningUnlocked(
+    projectId: string,
+    onEvent: DeploymentEventCallback | undefined,
+  ): Promise<DeploymentRecord> {
     const newDeployment = await this.deployProject(projectId, onEvent);
 
     await this.#stopPreviousRunningDeployments(
@@ -477,6 +496,30 @@ export class DeploymentService {
     );
 
     return newDeployment;
+  }
+
+  async #stopOwnedDeployment(
+    deployment: OwnedDeployment,
+    onEvent: DeploymentEventCallback | undefined,
+  ): Promise<DeploymentRecord> {
+    const containerId = this.#requireContainerId(deployment);
+
+    try {
+      await this.#containerService.stopContainer(containerId);
+      const stoppedDeployment = await this.#updateDeployment(deployment.id, {
+        status: DeploymentStatus.STOPPED,
+        finishedAt: this.#now(),
+      });
+      this.#emit(onEvent, {
+        type: 'status',
+        deploymentId: stoppedDeployment.id,
+        status: DeploymentStatus.STOPPED,
+      });
+      return stoppedDeployment;
+    } catch (error: unknown) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(500, 'Unable to stop deployment');
+    }
   }
 
   public async getDeploymentLogs(

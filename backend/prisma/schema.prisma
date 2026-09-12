@@ -43,6 +43,8 @@ model Project {
   branch            String                  @db.VarChar(255)
   containerPort     Int
   healthCheckPath   String                  @default("/") @db.VarChar(1024)
+  operationLockToken String?                @db.Uuid
+  operationLockExpiresAt DateTime?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -50,6 +52,7 @@ model Project {
   webhookDeliveries GitHubWebhookDelivery[]
 
   @@index([userId])
+  @@index([operationLockExpiresAt])
 }
 
 model GitHubWebhookDelivery {

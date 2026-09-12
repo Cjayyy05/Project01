@@ -111,7 +111,13 @@ describe('ContainerService', () => {
       Image: 'deployflow/example:latest',
       ExposedPorts: { '8080/tcp': {} },
       HostConfig: {
-        PortBindings: { '8080/tcp': [{ HostPort: '' }] },
+        PortBindings: {
+          '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '' }],
+        },
+        LogConfig: {
+          Type: 'json-file',
+          Config: { 'max-size': '10m', 'max-file': '3' },
+        },
       },
       Labels: { 'deployflow.deployment-id': deploymentId },
     });
@@ -241,6 +247,32 @@ describe('ContainerService', () => {
       timestamps: true,
       tail: 250,
     });
+  });
+
+  it('uses a bounded default tail and caps the log response size', async () => {
+    container.logs.mockResolvedValue('x'.repeat(2 * 1024 * 1024));
+    const service = new ContainerService(docker);
+
+    const logs = await service.getLogs(containerId);
+
+    expect(container.logs).toHaveBeenCalledWith({
+      stdout: true,
+      stderr: true,
+      follow: false,
+      timestamps: false,
+      tail: 1_000,
+    });
+    expect(Buffer.byteLength(logs, 'utf8')).toBeLessThanOrEqual(1024 * 1024);
+    expect(logs).toMatch(/^\[Earlier log output truncated\]/);
+  });
+
+  it('rejects an excessive log tail', async () => {
+    const service = new ContainerService(docker);
+
+    await expect(
+      service.getLogs(containerId, { tail: 10_001 }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(container.logs).not.toHaveBeenCalled();
   });
 
   it('calculates current CPU and memory statistics', async () => {

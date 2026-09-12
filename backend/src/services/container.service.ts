@@ -7,6 +7,10 @@ const UUID_PATTERN =
 const CONTAINER_ID_PATTERN = /^[0-9a-f]{12,64}$/i;
 const HOST_PORT_PATTERN = /^\d{1,5}$/;
 const MAX_IMAGE_IDENTIFIER_LENGTH = 512;
+const DEFAULT_LOG_TAIL = 1_000;
+const MAX_LOG_TAIL = 10_000;
+const MAX_LOG_RESPONSE_BYTES = 1024 * 1024;
+const TRUNCATED_LOG_PREFIX = '[Earlier log output truncated]\n';
 
 export type StartContainerInput = {
   imageIdentifier: string;
@@ -52,7 +56,11 @@ export type ContainerCreateOptions = {
   Image: string;
   ExposedPorts: Record<string, Record<string, never>>;
   HostConfig: {
-    PortBindings: Record<string, { HostPort: string }[]>;
+    PortBindings: Record<string, { HostIp: string; HostPort: string }[]>;
+    LogConfig: {
+      Type: 'json-file';
+      Config: { 'max-size': string; 'max-file': string };
+    };
   };
   Labels: Record<string, string>;
 };
@@ -156,10 +164,10 @@ const parseStartInput = (input: StartContainerInput): StartContainerInput => {
 };
 
 const parseTail = (tail: number | undefined): number | 'all' => {
-  if (tail === undefined) return 'all';
+  if (tail === undefined) return DEFAULT_LOG_TAIL;
 
-  if (!Number.isInteger(tail) || tail < 0 || tail > 100_000) {
-    throw new AppError(400, 'Log tail must be an integer from 0 to 100000');
+  if (!Number.isInteger(tail) || tail < 0 || tail > MAX_LOG_TAIL) {
+    throw new AppError(400, 'Log tail must be an integer from 0 to 10000');
   }
 
   return tail;
@@ -246,6 +254,20 @@ const decodeDockerLogs = (logs: Buffer | string): string => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
+const limitLogResponse = (logs: string): string => {
+  const encodedLogs = Buffer.from(logs, 'utf8');
+  if (encodedLogs.length <= MAX_LOG_RESPONSE_BYTES) return logs;
+
+  const prefix = Buffer.from(TRUNCATED_LOG_PREFIX, 'utf8');
+  const availableBytes = MAX_LOG_RESPONSE_BYTES - prefix.length;
+  const suffix = encodedLogs
+    .subarray(encodedLogs.length - availableBytes)
+    .toString('utf8')
+    .replace(/^\uFFFD+/, '');
+
+  return `${TRUNCATED_LOG_PREFIX}${suffix}`;
+};
+
 const parseDockerDate = (value: unknown): Date | null => {
   if (typeof value !== 'string' || value.startsWith('0001-01-01')) return null;
 
@@ -278,7 +300,13 @@ export class ContainerService {
         Image: input.imageIdentifier,
         ExposedPorts: { [portKey]: {} },
         HostConfig: {
-          PortBindings: { [portKey]: [{ HostPort: '' }] },
+          PortBindings: {
+            [portKey]: [{ HostIp: '127.0.0.1', HostPort: '' }],
+          },
+          LogConfig: {
+            Type: 'json-file',
+            Config: { 'max-size': '10m', 'max-file': '3' },
+          },
         },
         Labels: { 'deployflow.deployment-id': input.deploymentId },
       });
@@ -364,7 +392,7 @@ export class ContainerService {
         timestamps: options.timestamps ?? false,
         tail,
       });
-      return decodeDockerLogs(logs);
+      return limitLogResponse(decodeDockerLogs(logs));
     } catch (error: unknown) {
       throw toOperationError(error, 'Unable to retrieve container logs');
     }

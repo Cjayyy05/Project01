@@ -7,11 +7,43 @@ const databaseMocks = vi.hoisted(() => ({
   findFirst: vi.fn<(args: unknown) => Promise<unknown>>(),
   findMany: vi.fn<(args: unknown) => Promise<unknown[]>>(),
   updateMany: vi.fn<(args: unknown) => Promise<{ count: number }>>(),
+  findDeployments: vi.fn<(args: unknown) => Promise<unknown[]>>(),
+}));
+
+const dockerMocks = vi.hoisted(() => ({
+  imageExists: vi.fn<(image: string) => Promise<boolean>>(),
+  inspectStatus: vi.fn<(containerId: string) => Promise<{ running: boolean }>>(),
+  removeContainer: vi.fn<(containerId: string) => Promise<void>>(),
+  removeImage: vi.fn<(image: string) => Promise<void>>(),
+  stopContainer: vi.fn<(containerId: string) => Promise<unknown>>(),
 }));
 
 vi.mock('../src/config/database.js', () => ({
   database: {
     project: databaseMocks,
+    deployment: { findMany: databaseMocks.findDeployments },
+  },
+}));
+
+vi.mock('../src/services/container.service.js', () => ({
+  containerService: {
+    inspectStatus: dockerMocks.inspectStatus,
+    removeContainer: dockerMocks.removeContainer,
+    stopContainer: dockerMocks.stopContainer,
+  },
+}));
+
+vi.mock('../src/services/docker-build.service.js', () => ({
+  dockerBuildService: {
+    imageExists: dockerMocks.imageExists,
+    removeImage: dockerMocks.removeImage,
+  },
+}));
+
+vi.mock('../src/services/project-operation-lock.service.js', () => ({
+  projectOperationLockService: {
+    runExclusive: (_projectId: string, operation: () => Promise<unknown>) =>
+      operation(),
   },
 }));
 
@@ -45,6 +77,18 @@ beforeEach(() => {
   databaseMocks.findFirst.mockReset();
   databaseMocks.findMany.mockReset();
   databaseMocks.updateMany.mockReset();
+  databaseMocks.findDeployments.mockReset();
+  dockerMocks.imageExists.mockReset();
+  dockerMocks.inspectStatus.mockReset();
+  dockerMocks.removeContainer.mockReset();
+  dockerMocks.removeImage.mockReset();
+  dockerMocks.stopContainer.mockReset();
+  databaseMocks.findDeployments.mockResolvedValue([]);
+  dockerMocks.imageExists.mockResolvedValue(false);
+  dockerMocks.inspectStatus.mockResolvedValue({ running: false });
+  dockerMocks.removeContainer.mockResolvedValue(undefined);
+  dockerMocks.removeImage.mockResolvedValue(undefined);
+  dockerMocks.stopContainer.mockResolvedValue(undefined);
 });
 
 describe('POST /api/projects', () => {
@@ -267,6 +311,7 @@ describe('PATCH /api/projects/:id', () => {
 
 describe('DELETE /api/projects/:id', () => {
   it('deletes an owned project', async () => {
+    databaseMocks.findFirst.mockResolvedValue(project);
     databaseMocks.deleteMany.mockResolvedValue({ count: 1 });
 
     const response = await request(createApp())
@@ -280,7 +325,7 @@ describe('DELETE /api/projects/:id', () => {
   });
 
   it("does not delete another user's project", async () => {
-    databaseMocks.deleteMany.mockResolvedValue({ count: 0 });
+    databaseMocks.findFirst.mockResolvedValue(null);
 
     const response = await request(createApp())
       .delete(`/api/projects/${projectId}`)
@@ -290,8 +335,52 @@ describe('DELETE /api/projects/:id', () => {
     expect(response.body).toEqual({
       error: { message: 'Project not found' },
     });
-    expect(databaseMocks.deleteMany).toHaveBeenCalledWith({
-      where: { id: projectId, userId },
+    expect(databaseMocks.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('stops and removes running project containers before deletion', async () => {
+    databaseMocks.findFirst.mockResolvedValue(project);
+    databaseMocks.findDeployments.mockResolvedValue([
+      { containerId: 'a'.repeat(64), imageTag: 'deployflow/project/image-a' },
+      { containerId: 'b'.repeat(64), imageTag: 'deployflow/project/image-b' },
+    ]);
+    dockerMocks.inspectStatus
+      .mockResolvedValueOnce({ running: true })
+      .mockResolvedValueOnce({ running: false });
+    dockerMocks.imageExists.mockResolvedValue(true);
+    databaseMocks.deleteMany.mockResolvedValue({ count: 1 });
+
+    const response = await request(createApp())
+      .delete(`/api/projects/${projectId}`)
+      .set('Authorization', authorization);
+
+    expect(response.status).toBe(204);
+    expect(dockerMocks.stopContainer).toHaveBeenCalledOnce();
+    expect(dockerMocks.stopContainer).toHaveBeenCalledWith('a'.repeat(64));
+    expect(dockerMocks.removeContainer).toHaveBeenCalledTimes(2);
+    expect(dockerMocks.removeImage).toHaveBeenCalledTimes(2);
+    expect(databaseMocks.deleteMany).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the project record when Docker cleanup fails', async () => {
+    databaseMocks.findFirst.mockResolvedValue(project);
+    databaseMocks.findDeployments.mockResolvedValue([
+      { containerId: 'a'.repeat(64), imageTag: null },
+    ]);
+    dockerMocks.inspectStatus.mockResolvedValue({ running: true });
+    dockerMocks.stopContainer.mockRejectedValue(new Error('Docker unavailable'));
+
+    const response = await request(createApp())
+      .delete(`/api/projects/${projectId}`)
+      .set('Authorization', authorization);
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({
+      error: {
+        message:
+          'Project Docker resources could not be cleaned up; the project was not deleted',
+      },
     });
+    expect(databaseMocks.deleteMany).not.toHaveBeenCalled();
   });
 });

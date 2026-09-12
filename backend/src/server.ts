@@ -8,6 +8,8 @@ const app = createApp();
 const server = createServer(app);
 attachDeploymentSocket(server);
 
-server.listen(env.port, () => {
-  console.log(`DeployFlow API listening on port ${String(env.port)}`);
+server.listen(env.port, env.bindHost, () => {
+  console.log(
+    `DeployFlow API listening on ${env.bindHost}:${String(env.port)}`,
+  );
 });
